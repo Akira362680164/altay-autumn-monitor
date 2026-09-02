@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/schemas/ejina_status.schema.json",
+  "title": "Ejina weather-only namespace status",
+  "type": "object",
+  "required": ["schema_version", "namespace", "generated_at", "data_date", "pipeline_status", "modules", "module_details", "points", "history_start", "forecast_end_date"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.1.0"},
+    "namespace": {"type": "string", "const": "ejina"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "data_date": {"type": "string", "format": "date"},
+    "pipeline_status": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED"]},
+    "modules": {"type": "object", "additionalProperties": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "SKIPPED"]}},
+    "module_details": {"type": "object"},
+    "points": {"type": "object"},
+    "history_start": {"type": "object"},
+    "forecast_end_date": {"type": ["string", "null"], "format": "date"},
+    "weather_only_boundary": {"type": "string"},
+    "failure_policy": {"type": "string"}
+  },
+  "additionalProperties": true
+}

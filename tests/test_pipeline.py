@@ -1,8 +1,10 @@
 import sys
 import json
+import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -392,6 +394,139 @@ class PipelineUnitTests(unittest.TestCase):
         )
         self.assertFalse(result["valid"])
         self.assertIn("MODEL_ID_MISMATCH", result["reason"])
+
+    def test_ejina_registry_has_three_verified_points_and_weather_only_namespace(self):
+        config = pipeline.load_ejina_config()
+        self.assertEqual(config["namespace"], "ejina")
+        self.assertEqual(pipeline.core_region_ids(config), ("erdaoqiao", "sidaoqiao", "qidaoqiao"))
+        active = pipeline.active_points(config)
+        self.assertEqual(set(active), {"EJ1", "EJ2", "EJ3"})
+        self.assertEqual(active["EJ1"]["status"], "VERIFIED")
+        self.assertAlmostEqual(active["EJ1"]["latitude"], 41.968333, places=6)
+        self.assertAlmostEqual(active["EJ1"]["longitude"], 101.086111, places=6)
+        self.assertAlmostEqual(active["EJ2"]["latitude"], 42.0012, places=6)
+        self.assertAlmostEqual(active["EJ2"]["longitude"], 101.1374, places=6)
+        self.assertAlmostEqual(active["EJ3"]["latitude"], 42.009167, places=6)
+        self.assertAlmostEqual(active["EJ3"]["longitude"], 101.231389, places=6)
+        self.assertEqual(config["history_start_month_day"], "09-01")
+        self.assertEqual(config["forecast_end_date"], "2026-10-07")
+        self.assertEqual(set(pipeline.THRESHOLDS_C), {15.0, 10.0, 5.0, 2.0, 0.0})
+
+    def test_ejina_history_start_and_forecast_cutoff(self):
+        self.assertEqual(
+            pipeline.history_date_range(date(2026, 9, 1), 2025, "09-01"),
+            ("2025-09-01", "2025-09-01"),
+        )
+        self.assertIsNone(pipeline.history_date_range(date(2026, 8, 31), 2026, "09-01"))
+        payload = self.make_payload()
+        payload["hourly"]["time"] = [
+            "2026-10-07T23:00",
+            "2026-10-08T00:00",
+        ]
+        payload["hourly"]["temperature_2m"] = [1, 2]
+        payload["hourly"]["precipitation"] = [0, 0]
+        trimmed, audit = pipeline.trim_to_forecast_cutoff(payload, date(2026, 10, 7))
+        self.assertEqual(trimmed["hourly"]["time"], ["2026-10-07T23:00"])
+        self.assertEqual(audit["rows_dropped_after_cutoff"], 1)
+        self.assertEqual(audit["forecast_cutoff_date"], "2026-10-07")
+
+    def test_ejina_long_range_window_cutoff_never_emits_later_date(self):
+        hourly = self.make_long_range_hourly()
+        origin, daily_by_lead = pipeline.long_range_daily_member_values(hourly)
+        windows = pipeline.build_long_range_windows(
+            origin,
+            daily_by_lead,
+            {},
+            max_date=date(2026, 9, 25),
+        )
+        self.assertTrue(windows)
+        self.assertTrue(all(item["end_date"] <= "2026-09-25" for item in windows))
+        self.assertTrue(all(item["start_date"] <= "2026-10-07" for item in windows))
+
+    def test_ejina_single_run_target_works_without_visit_date(self):
+        target, policy, visit_date = pipeline.select_single_run_target(
+            {"primary_visit_date": None, "forecast_end_date": "2026-10-07"},
+            datetime(2026, 9, 2, 0, tzinfo=pipeline.LOCAL_TZ),
+        )
+        self.assertEqual(target, "2026-09-05T05:00")
+        self.assertEqual(policy, "rolling_plus_3_days_no_visit_date")
+        self.assertIsNone(visit_date)
+
+    def test_ejina_summary_contains_weather_deltas_without_downstream_conclusions(self):
+        config = pipeline.load_ejina_config()
+        days_2025 = [self.make_day("2025-09-01", 8)]
+        days_2026 = [self.make_day("2026-09-01", 3)]
+        metrics_2025 = pipeline.period_metrics(days_2025)
+        metrics_2026 = pipeline.period_metrics(days_2026)
+        hres_days = [self.make_day(f"2026-09-{day:02d}", 4) for day in range(2, 17)]
+        point_record = {"status": "PASS", "daily": hres_days, "qa": {"final_status": "PASS"}}
+        modules = {
+            "hres": {"points": {point_id: point_record for point_id in ("EJ1", "EJ2", "EJ3")}},
+            "history": {
+                "region_summaries": {
+                    "points": {
+                        "EJ1": {
+                            "status": "OK",
+                            "period_start": "09-01",
+                            "period_end": "2026-09-01",
+                            "metrics": {"2025": metrics_2025, "2026": metrics_2026},
+                            "delta_2026_minus_2025": pipeline.numeric_deltas(metrics_2026, metrics_2025),
+                            "same_grid_qa": {"status": "PASS"},
+                        }
+                    },
+                    "regions": {},
+                }
+            },
+            "ensemble": {"model": "ECMWF IFS 0.25° Ensemble", "model_id": "ecmwf_ifs025_ensemble", "total_members": 51, "points": {point_id: point_record for point_id in ("EJ1", "EJ2", "EJ3")}},
+            "gfs": {"points": {point_id: point_record for point_id in ("EJ1", "EJ2", "EJ3")}},
+            "single_runs": {"regions": {region_id: {"status": "OK", "latest_change": {"status": "NO_CHANGE"}, "run_count_requested": 8, "run_count_available": 8} for region_id in pipeline.core_region_ids(config)}},
+            "long_range": {"regions": {region_id: {"status": "UNAVAILABLE", "reason": "TEST"} for region_id in pipeline.core_region_ids(config)}},
+        }
+        summary = pipeline.build_ejina_summary(
+            config,
+            "2026-09-02T00:00:00Z",
+            "2026-09-01",
+            datetime(2026, 9, 2, tzinfo=pipeline.LOCAL_TZ),
+            modules["hres"],
+            modules["history"],
+            modules["ensemble"],
+            modules["gfs"],
+            modules["single_runs"],
+            modules["long_range"],
+        )
+        self.assertIn("delta_2026_minus_2025", summary["regions"]["erdaoqiao"]["history_comparison"])
+        text = json.dumps(summary, ensure_ascii=False).lower()
+        for forbidden in ("actual_phenology_lead_days", "best_viewing_period", "worth_going", "tourism_recommendation"):
+            self.assertNotIn(forbidden, text)
+
+    def test_ejina_namespace_status_is_independent_from_main_status(self):
+        config = pipeline.load_config()
+        modules = {name: {"status": "OK"} for name in ("hres", "history", "ensemble", "gfs", "single_runs", "spatial_sampling")}
+        modules["long_range"] = {"status": "PARTIAL"}
+        status = pipeline.build_status(
+            config,
+            "2026-09-02T00:00:00Z",
+            "2026-09-01",
+            modules,
+            {"ejina": {"status": "FAILED", "modules": {"hres": "FAILED"}}},
+        )
+        self.assertEqual(status["modules"]["hres"], "OK")
+        self.assertEqual(status["namespaces"]["ejina"]["status"], "FAILED")
+
+    def test_ejina_long_range_snapshot_loader_reads_nested_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "2026-09-01" / "ejina"
+            archive.mkdir(parents=True)
+            snapshot = {
+                "status": "PARTIAL",
+                "generated_at": "2026-09-01T00:00:00Z",
+                "regions": {},
+            }
+            (archive / "long_range.json").write_text(json.dumps(snapshot), encoding="utf-8")
+            with patch.object(pipeline, "ARCHIVE_DIR", Path(directory)):
+                loaded = pipeline.load_long_range_snapshots(date(2026, 9, 2), namespace="ejina")
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["status"], "PARTIAL")
 
 
 if __name__ == "__main__":

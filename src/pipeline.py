@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - CI installs requirements.txt
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "points.json"
+EJINA_CONFIG_PATH = ROOT / "config" / "ejina_points.json"
 LATEST_DIR = ROOT / "data" / "latest"
 ARCHIVE_DIR = ROOT / "data" / "archive"
 TIMEZONE_NAME = "Asia/Shanghai"
@@ -77,7 +78,7 @@ LONG_RANGE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gus
 LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
 LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
 CORE_REGION_IDS = ("baihaba", "kanas", "keketuohai")
-THRESHOLDS_C = (10.0, 5.0, 2.0, 0.0)
+THRESHOLDS_C = (15.0, 10.0, 5.0, 2.0, 0.0)
 
 PRECISION_POLICIES = {
     "hres": [
@@ -162,13 +163,20 @@ def write_gzip_json(path: Path, value: object) -> None:
     temp_path.replace(path)
 
 
-def load_config() -> dict:
-    with CONFIG_PATH.open(encoding="utf-8") as handle:
+def load_config(path: Path = CONFIG_PATH) -> dict:
+    with path.open(encoding="utf-8") as handle:
         config = json.load(handle)
     if config.get("timezone") != TIMEZONE_NAME:
         raise ValueError(f"config timezone must be {TIMEZONE_NAME}")
     if config.get("schema_version") not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
         raise ValueError("unsupported points schema version")
+    return config
+
+
+def load_ejina_config() -> dict:
+    config = load_config(EJINA_CONFIG_PATH)
+    if config.get("namespace") != "ejina":
+        raise ValueError("Ejina config namespace must be ejina")
     return config
 
 
@@ -202,6 +210,25 @@ def active_points(config: dict) -> dict[str, dict]:
             raise ValueError(f"invalid VERIFIED coordinate: {point_id}")
         points[point_id] = {"id": point_id, **point}
     return points
+
+
+def core_region_ids(config: dict) -> tuple[str, ...]:
+    """Return configured regions with a core point, preserving config order."""
+    return tuple(
+        region_id
+        for region_id, region in config.get("regions", {}).items()
+        if region.get("core_point_id")
+    )
+
+
+def point_forecast_end_date(point: dict) -> dt.date | None:
+    value = point.get("forecast_end_date")
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(str(value))
+    except ValueError as error:
+        raise ValueError(f"invalid forecast_end_date for {point.get('id')}: {value}") from error
 
 
 def excluded_points(config: dict) -> dict[str, dict]:
@@ -449,6 +476,41 @@ def trim_incomplete_edge_rows(payload: dict, required_variables: list[str]) -> t
     return output, audit
 
 
+def trim_to_forecast_cutoff(payload: dict, max_date: dt.date | None) -> tuple[dict, dict]:
+    """Drop forecast rows after a configured local-date cutoff and audit the drop."""
+    output = copy.deepcopy(payload)
+    hourly = output.get("hourly") if isinstance(output.get("hourly"), dict) else {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    if max_date is None:
+        return output, {
+            "forecast_cutoff_applied": False,
+            "forecast_cutoff_date": None,
+            "rows_dropped_after_cutoff": 0,
+        }
+    keep_indices = []
+    invalid_timestamps = []
+    for index, value in enumerate(times):
+        try:
+            keep = parse_local_api_time(value).date() <= max_date
+        except (TypeError, ValueError):
+            keep = False
+            invalid_timestamps.append(index)
+        if keep:
+            keep_indices.append(index)
+    for key, values in list(hourly.items()):
+        if isinstance(values, list):
+            hourly[key] = [values[index] for index in keep_indices if index < len(values)]
+    output["hourly"] = hourly
+    return output, {
+        "forecast_cutoff_applied": True,
+        "forecast_cutoff_date": max_date.isoformat(),
+        "rows_before_cutoff": len(times),
+        "rows_retained_through_cutoff": len(keep_indices),
+        "rows_dropped_after_cutoff": len(times) - len(keep_indices),
+        "invalid_timestamp_rows_dropped": invalid_timestamps,
+    }
+
+
 def response_meta(payload: dict) -> dict:
     return {
         "grid_coordinate": {
@@ -636,6 +698,7 @@ def fetch_point(
     model_run_initialization: str | None = None,
     accepted_model_values: tuple[str, ...] = (),
     accepted_model_ids: tuple[str, ...] = (),
+    max_forecast_date: dt.date | None = None,
 ) -> dict:
     try:
         payload, url, solar_variable = request_payload(
@@ -658,7 +721,9 @@ def fetch_point(
             model_run_initialization=model_run_initialization,
         )
     selected_required_variables = [value for value in [*required_variables, solar_variable] if value]
+    payload, cutoff_audit = trim_to_forecast_cutoff(payload, max_forecast_date)
     payload, completeness = trim_incomplete_edge_rows(payload, selected_required_variables)
+    completeness.update(cutoff_audit)
     qa = validate_payload(
         payload,
         point,
@@ -762,6 +827,7 @@ def run_hres(config: dict, client: ApiClient, generated_at: str, data_date: str)
             grid_limit_km=HRES_GRID_QA_LIMIT_KM,
             log_label=f"{point_id}:HRES",
             precision_module="hres",
+            max_forecast_date=point_forecast_end_date(point),
         )
         records.append(record)
         by_id[point_id] = record
@@ -783,9 +849,18 @@ def run_hres(config: dict, client: ApiClient, generated_at: str, data_date: str)
     )
 
 
-def history_date_range(completed_date: dt.date, year: int) -> tuple[str, str] | None:
-    start = dt.date(year, 8, 25)
-    if completed_date < dt.date(2026, 8, 25):
+def history_date_range(
+    completed_date: dt.date,
+    year: int,
+    start_month_day: str = "08-25",
+) -> tuple[str, str] | None:
+    try:
+        start_month, start_day = (int(value) for value in start_month_day.split("-", 1))
+        start = dt.date(year, start_month, start_day)
+        current_start = dt.date(2026, start_month, start_day)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"invalid history start month-day: {start_month_day}") from error
+    if completed_date < current_start:
         return None
     try:
         end = dt.date(year, completed_date.month, completed_date.day)
@@ -799,9 +874,14 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
     point_results: dict[str, dict] = {}
     all_records = []
     for point_id, point in points.items():
+        region_config = config.get("regions", {}).get(point["region"], {})
+        history_start = region_config.get(
+            "history_start_month_day",
+            config.get("history_start_month_day", "08-25"),
+        )
         years: dict[str, dict] = {}
         for year in (2025, 2026):
-            date_range = history_date_range(completed_date, year)
+            date_range = history_date_range(completed_date, year, history_start)
             if date_range is None:
                 record = invalid_record(
                     point=point,
@@ -838,6 +918,7 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         point_results[point_id] = {
             "point_id": point_id,
             "point": {"name": point["name"], "region": point["region"], "status": point["status"]},
+            "history_start_month_day": history_start,
             "years": years,
         }
     comparison = build_history_comparison(config, point_results, data_date)
@@ -850,7 +931,7 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         endpoint=OPEN_METEO_ENDPOINTS["history"],
         model="ECMWF IFS 9 km historical weather / analysis",
         model_parameter="ecmwf_ifs",
-        period_start="2025-08-25 / 2026-08-25",
+        period_start=f"2025-{config.get('history_start_month_day', '08-25')} / 2026-{config.get('history_start_month_day', '08-25')}",
         period_end=data_date,
         note="Historical IFS is reanalysis/analysis, not station observation.",
         points=point_results,
@@ -979,6 +1060,10 @@ def numeric_deltas(current: dict, baseline: dict) -> dict:
         base = baseline.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(base, (int, float)) and not isinstance(base, bool):
             delta[key] = round(value - base, 3)
+        elif isinstance(value, dict) and isinstance(base, dict):
+            nested = numeric_deltas(value, base)
+            if nested:
+                delta[key] = nested
     return delta
 
 
@@ -1027,32 +1112,71 @@ def build_history_comparison(config: dict, point_results: dict[str, dict], data_
         daily_2026 = years.get("2026", {}).get("daily", []) if years.get("2026", {}).get("status") == "PASS" else []
         metrics_2025 = period_metrics(daily_2025)
         metrics_2026 = period_metrics(daily_2026)
-        comparisons[point_id] = {
+        response_2025 = years.get("2025", {}).get("response") or {}
+        response_2026 = years.get("2026", {}).get("response") or {}
+        grid_2025 = response_2025.get("grid_coordinate")
+        grid_2026 = response_2026.get("grid_coordinate")
+        same_grid = (
+            "PASS"
+            if grid_2025 and grid_2026 and grid_2025 == grid_2026
+            else "FAIL"
+            if grid_2025 and grid_2026
+            else "UNAVAILABLE"
+        )
+        history_start = result.get("history_start_month_day")
+        if not history_start:
+            history_start = config.get("regions", {}).get(result["point"]["region"], {}).get(
+                "history_start_month_day",
+                config.get("history_start_month_day", "08-25"),
+            )
+        comparison_status = "OK" if daily_2025 and daily_2026 and same_grid != "FAIL" else "FAILED"
+        comparison_delta = numeric_deltas(metrics_2026, metrics_2025) if comparison_status == "OK" else {}
+        comparison = {
             "point_id": point_id,
             "region": result["point"]["region"],
-            "status": "OK" if daily_2025 and daily_2026 else "FAILED",
-            "period_start": "08-25",
+            "status": comparison_status,
+            "period_start": history_start,
             "period_end": data_date,
             "daily": {"2025": daily_2025, "2026": daily_2026},
             "metrics": {"2025": metrics_2025, "2026": metrics_2026},
-            "weather_driver_vs_2025": driver_direction(metrics_2026, metrics_2025),
+            "delta_2026_minus_2025": comparison_delta,
+            "same_grid_qa": {
+                "status": same_grid,
+                "returned_grid_2025": grid_2025,
+                "returned_grid_2026": grid_2026,
+                "same_requested_coordinate": (
+                    "PASS"
+                    if years.get("2025", {}).get("request", {}).get("coordinate")
+                    and years.get("2025", {}).get("request", {}).get("coordinate")
+                    == years.get("2026", {}).get("request", {}).get("coordinate")
+                    else "FAIL"
+                    if years.get("2025", {}).get("request", {}).get("coordinate")
+                    and years.get("2026", {}).get("request", {}).get("coordinate")
+                    else "UNAVAILABLE"
+                ),
+            },
         }
+        if config.get("namespace") != "ejina":
+            comparison["weather_driver_vs_2025"] = driver_direction(metrics_2026, metrics_2025)
+        comparisons[point_id] = comparison
     region_summaries: dict[str, dict] = {}
-    for region_id in CORE_REGION_IDS:
+    for region_id in core_region_ids(config):
         region_config = config["regions"][region_id]
         core_id = region_config.get("core_point_id")
         comparison = comparisons.get(core_id) if core_id else None
         if comparison:
-            region_summaries[region_id] = {
+            region_summary = {
                 "region": region_id,
                 "core_point_id": core_id,
                 "status": comparison["status"],
                 "usable_for_main_chain": True,
-                "visit_date": region_config.get("primary_visit_date"),
-                "weather_driver_vs_2025": comparison["weather_driver_vs_2025"],
                 "metrics": comparison["metrics"],
                 "supporting_point_ids": [point_id for point_id, item in comparisons.items() if item["region"] == region_id and point_id != core_id],
             }
+            if config.get("namespace") != "ejina":
+                region_summary["visit_date"] = region_config.get("primary_visit_date")
+                region_summary["weather_driver_vs_2025"] = comparison["weather_driver_vs_2025"]
+            region_summaries[region_id] = region_summary
     return {"points": comparisons, "regions": region_summaries}
 
 
@@ -1072,6 +1196,7 @@ def run_gfs(config: dict, client: ApiClient, generated_at: str, data_date: str) 
             grid_limit_km=19.5,
             log_label=f"{point_id}:GFS",
             precision_module="gfs",
+            max_forecast_date=point_forecast_end_date(point),
         )
     values = list(records.values())
     return module_header(
@@ -1228,9 +1353,9 @@ def spatial_region_summary(region_id: str, samples: list[dict]) -> dict:
 def run_spatial(config: dict, client: ApiClient, generated_at: str, data_date: str, hres: dict) -> dict:
     regions: dict[str, dict] = {}
     enabled_region_statuses = []
+    points = active_points(config)
     for region_id, region_config in config["regions"].items():
         core_id = region_config.get("core_point_id")
-        points = active_points(config)
         core_point = points.get(core_id) if core_id else None
         if not core_point:
             log(f"[{region_id}] SKIPPED: PROVISIONAL")
@@ -1281,6 +1406,7 @@ def run_spatial(config: dict, client: ApiClient, generated_at: str, data_date: s
                     grid_limit_km=sampling_grid_limit_km,
                     log_label=f"{sample['sample_id']}:SPATIAL",
                     precision_module="hres",
+                    max_forecast_date=point_forecast_end_date(core_point),
                 )
             full_records.append(record)
             compact_samples.append(compact_spatial_sample(sample, record))
@@ -1375,7 +1501,7 @@ def ensemble_daily_distributions(hourly: dict) -> dict:
         night_stats = ensemble_statistics(night_values)
         daily_stats = ensemble_statistics(daily_means)
         thresholds = {}
-        for threshold in (5.0, 2.0, 0.0):
+        for threshold in THRESHOLDS_C:
             key = f"below_{str(int(threshold))}_c"
             below = sum(value < threshold for value in night_values)
             thresholds[key] = {
@@ -1420,7 +1546,7 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
     points = active_points(config)
     records: dict[str, dict] = {}
     active_core_ids = []
-    for region_id in CORE_REGION_IDS:
+    for region_id in core_region_ids(config):
         core_id = config["regions"][region_id].get("core_point_id")
         point = points.get(core_id) if core_id else None
         if not point:
@@ -1442,6 +1568,7 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
             required_variables=ENSEMBLE_VARIABLES,
             grid_limit_km=37.5,
             log_label=f"{core_id}:ENSEMBLE",
+            max_forecast_date=point_forecast_end_date(point),
         )
         if record.get("status") == "PASS":
             members_valid, member_check = validate_ensemble_members(record)
@@ -1833,17 +1960,25 @@ def build_long_range_windows(
     origin_date: dt.date,
     daily_by_lead: dict[int, dict[str, dict]],
     reference_days: dict[str, dict],
+    max_date: dt.date | None = None,
 ) -> list[dict]:
     windows = []
     for start_lead, end_lead in long_range_window_definitions():
-        current_values = long_range_member_window_values(daily_by_lead, start_lead, end_lead)
+        effective_end_lead = end_lead
+        if max_date is not None:
+            max_lead = (max_date - origin_date).days
+            if max_lead < start_lead:
+                continue
+            effective_end_lead = min(end_lead, max_lead)
+        current_values = long_range_member_window_values(daily_by_lead, start_lead, effective_end_lead)
         start_date = origin_date + dt.timedelta(days=start_lead)
-        end_date = origin_date + dt.timedelta(days=end_lead)
+        end_date = origin_date + dt.timedelta(days=effective_end_lead)
         if not current_values:
             windows.append({
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
-                "horizon_class": f"D{start_lead}_D{end_lead}",
+                "horizon_class": f"D{start_lead}_D{effective_end_lead}",
+                "requested_horizon_class": f"D{start_lead}_D{end_lead}",
                 "confidence": "VERY_LOW",
                 "status": "UNAVAILABLE",
                 "reason": "WINDOW_DATA_MISSING",
@@ -1851,7 +1986,7 @@ def build_long_range_windows(
             continue
         temperature_stats = long_range_temperature_stats(current_values)
         reference_mean, reference_days_available = reference_mean_for_window(
-            reference_days, origin_date, start_lead, end_lead
+            reference_days, origin_date, start_lead, effective_end_lead
         )
         previous_values = long_range_member_window_values(daily_by_lead, start_lead - 3, start_lead - 1)
         cold_signal, cold_diagnostics = long_range_cold_window_signal(
@@ -1912,7 +2047,8 @@ def build_long_range_windows(
         windows.append({
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
-            "horizon_class": f"D{start_lead}_D{end_lead}",
+            "horizon_class": f"D{start_lead}_D{effective_end_lead}",
+            "requested_horizon_class": f"D{start_lead}_D{end_lead}",
             "confidence": confidence,
             "status": "OK",
             "temperature_distribution_c": temperature_stats,
@@ -1968,13 +2104,19 @@ def build_long_range_windows(
     return windows
 
 
-def load_long_range_snapshots(current_date: dt.date, limit: int = 5) -> list[dict]:
+def load_long_range_snapshots(
+    current_date: dt.date,
+    limit: int = 5,
+    namespace: str | None = None,
+) -> list[dict]:
     snapshots = []
     if not ARCHIVE_DIR.exists():
         return snapshots
-    for path in ARCHIVE_DIR.glob("*/long_range.json"):
+    pattern = f"*/{namespace}/long_range.json" if namespace else "*/long_range.json"
+    for path in ARCHIVE_DIR.glob(pattern):
+        archive_date_path = path.parent.parent if namespace else path.parent
         try:
-            archive_date = dt.date.fromisoformat(path.parent.name)
+            archive_date = dt.date.fromisoformat(archive_date_path.name)
         except ValueError:
             continue
         if archive_date >= current_date:
@@ -2170,12 +2312,19 @@ def run_long_range_reference(
     }
 
 
-def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date: str, now_local: dt.datetime) -> dict:
+def run_long_range(
+    config: dict,
+    client: ApiClient,
+    generated_at: str,
+    data_date: str,
+    now_local: dt.datetime,
+    archive_namespace: str | None = None,
+) -> dict:
     points = active_points(config)
     forecast_records: dict[str, dict] = {}
     raw_references: dict[str, dict] = {}
     active_core_ids = []
-    for region_id in CORE_REGION_IDS:
+    for region_id in core_region_ids(config):
         core_id = config["regions"][region_id].get("core_point_id")
         point = points.get(core_id) if core_id else None
         if not point:
@@ -2202,6 +2351,7 @@ def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date
             log_label=f"{core_id}:LONG_RANGE",
             accepted_model_values=(LONG_RANGE_MODEL_ID, LONG_RANGE_MODEL),
             accepted_model_ids=(LONG_RANGE_MODEL_ID,),
+            max_forecast_date=point_forecast_end_date(point),
         )
         if record.get("status") == "PASS":
             record.setdefault("qa", {})["grid_scale_class"] = "coarse_ensemble"
@@ -2216,14 +2366,14 @@ def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date
                 log(f"[{core_id}] LONG_RANGE MEMBER QA FAIL")
         forecast_records[region_id] = record
 
-    snapshots = load_long_range_snapshots(now_local.date())
+    snapshots = load_long_range_snapshots(now_local.date(), namespace=archive_namespace)
     regions = {}
     successful_points = 0
     partial_points = 0
     failed_points = 0
     forecast_horizons = []
     member_counts = []
-    for region_id in CORE_REGION_IDS:
+    for region_id in core_region_ids(config):
         region_config = config["regions"][region_id]
         core_id = region_config.get("core_point_id")
         point = points.get(core_id) if core_id else None
@@ -2280,7 +2430,12 @@ def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date
         reference = run_long_range_reference(point, client, origin_date, generated_at, data_date)
         raw_references[region_id] = reference.get("record")
         reference_days = {day["date"]: day for day in reference.get("daily", [])}
-        windows = build_long_range_windows(origin_date, daily_by_lead, reference_days)
+        windows = build_long_range_windows(
+            origin_date,
+            daily_by_lead,
+            reference_days,
+            max_date=point_forecast_end_date(point),
+        )
         windows = apply_signal_evolution(region_id, windows, snapshots)
         region_status = "OK" if (
             reference.get("status") == "PASS"
@@ -2306,6 +2461,9 @@ def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date
             },
             "qa": {
                 "forecast": record.get("qa"),
+                "request_coordinate": (record.get("request") or {}).get("coordinate"),
+                "returned_grid_coordinate": (record.get("response") or {}).get("grid_coordinate"),
+                "returned_elevation": (record.get("response") or {}).get("returned_elevation"),
                 "historical_reference": (reference.get("record") or {}).get("qa"),
                 "grid_scale_class": "coarse_ensemble",
                 "variable_horizon_partial": variable_horizon_partial,
@@ -2372,7 +2530,10 @@ def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date
             "windows": [f"D{start}_D{end}" for start, end in long_range_window_definitions()],
             "hourly_values_in_public_artifact": False,
         },
-        interpretation_boundary="16-35 day background signal only; not a date-level precise forecast and not a direct phenology lead/lag calculation.",
+        interpretation_boundary=config.get(
+            "long_range_interpretation_boundary",
+            "16-35 day background signal only; not a date-level precise forecast and not a direct phenology lead/lag calculation.",
+        ),
         regions=regions,
         excluded_points=excluded_points(config),
         raw_references=raw_references,
@@ -2396,14 +2557,25 @@ def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date
     )
 
 
-def select_single_run_target(region_config: dict, now_local: dt.datetime) -> tuple[str, str, str]:
-    visit_date = dt.date.fromisoformat(region_config["primary_visit_date"])
-    visit_target = dt.datetime.combine(visit_date, dt.time(5, 0), tzinfo=LOCAL_TZ)
-    days_ahead = (visit_target - now_local).total_seconds() / 86400
-    if 0 <= days_ahead <= 9:
-        return visit_target.strftime("%Y-%m-%dT%H:%M"), "primary_visit_date_within_10_day_run_horizon", visit_date.isoformat()
-    rolling = dt.datetime.combine(now_local.date() + dt.timedelta(days=3), dt.time(5, 0), tzinfo=LOCAL_TZ)
-    return rolling.strftime("%Y-%m-%dT%H:%M"), "rolling_plus_3_days_before_visit_window", visit_date.isoformat()
+def select_single_run_target(region_config: dict, now_local: dt.datetime) -> tuple[str, str, str | None]:
+    raw_visit_date = region_config.get("primary_visit_date")
+    visit_date = dt.date.fromisoformat(raw_visit_date) if raw_visit_date else None
+    if visit_date:
+        visit_target = dt.datetime.combine(visit_date, dt.time(5, 0), tzinfo=LOCAL_TZ)
+        days_ahead = (visit_target - now_local).total_seconds() / 86400
+        if 0 <= days_ahead <= 9:
+            return (
+                visit_target.strftime("%Y-%m-%dT%H:%M"),
+                "primary_visit_date_within_10_day_run_horizon",
+                visit_date.isoformat(),
+            )
+    rolling_date = now_local.date() + dt.timedelta(days=3)
+    raw_cutoff = region_config.get("forecast_end_date")
+    if raw_cutoff:
+        rolling_date = min(rolling_date, dt.date.fromisoformat(str(raw_cutoff)))
+    rolling = dt.datetime.combine(rolling_date, dt.time(5, 0), tzinfo=LOCAL_TZ)
+    policy = "rolling_plus_3_days_before_visit_window" if visit_date else "rolling_plus_3_days_no_visit_date"
+    return rolling.strftime("%Y-%m-%dT%H:%M"), policy, visit_date.isoformat() if visit_date else None
 
 
 def candidate_single_runs(now_utc: dt.datetime, count: int = 8) -> list[dt.datetime]:
@@ -2438,7 +2610,7 @@ def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_dat
     regions: dict[str, dict] = {}
     successful_run_entries = []
     candidates = candidate_single_runs(now_utc, 8)
-    for region_id in CORE_REGION_IDS:
+    for region_id in core_region_ids(config):
         region_config = config["regions"][region_id]
         core_id = region_config.get("core_point_id")
         point = points.get(core_id) if core_id else None
@@ -2468,6 +2640,7 @@ def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_dat
                 log_label=f"{core_id}:SINGLE_RUN {run_param}",
                 precision_module="single_runs",
                 model_run_initialization=iso_utc(candidate),
+                max_forecast_date=point_forecast_end_date(point),
             )
             target = target_values(record, target_time) if record.get("status") == "PASS" else {"status": "INVALID", "reason": "RUN_INVALID"}
             entry_status = "PASS" if record.get("status") == "PASS" and target.get("status") == "PASS" else "INVALID"
@@ -2561,6 +2734,8 @@ def forecast_0_7d(days: list[dict]) -> dict:
         "window_days": len(selected),
         "cold_windows": cold_windows,
         "frost_signal": {
+            "night_count_below_15c": sum(value < 15 for value in nights),
+            "night_count_below_10c": sum(value < 10 for value in nights),
             "night_count_below_5c": sum(value < 5 for value in nights),
             "night_count_below_2c": sum(value < 2 for value in nights),
             "night_count_below_0c": sum(value < 0 for value in nights),
@@ -2905,6 +3080,328 @@ def build_summary(
     }
 
 
+EJINA_MODULE_NAMES = ("hres", "history", "ensemble", "gfs", "single_runs", "long_range")
+
+
+def ejina_module_point_count(module: dict, key: str = "points") -> tuple[int, int]:
+    values = module.get(key) or {}
+    if not isinstance(values, dict):
+        return 0, 0
+    records = list(values.values())
+    return sum(item.get("status") == "PASS" for item in records if isinstance(item, dict)), len(records)
+
+
+def ejina_status_value(modules: dict[str, dict], name: str) -> str:
+    value = modules.get(name) or {}
+    return str(value.get("status", "FAILED"))
+
+
+def build_ejina_status(
+    config: dict,
+    generated_at: str,
+    data_date: str,
+    modules: dict[str, dict],
+) -> dict:
+    module_statuses = {name: ejina_status_value(modules, name) for name in EJINA_MODULE_NAMES}
+    if all(value == "OK" for value in module_statuses.values()):
+        pipeline_status = "OK"
+    elif any(value in {"OK", "PARTIAL"} for value in module_statuses.values()):
+        pipeline_status = "PARTIAL"
+    else:
+        pipeline_status = "FAILED"
+    module_details = {}
+    for name in EJINA_MODULE_NAMES:
+        value = modules.get(name) or {}
+        successful, total = ejina_module_point_count(value)
+        if name == "history":
+            successful = value.get("successful_fetches", successful)
+            total = successful + value.get("failed_fetches", 0)
+        elif name == "single_runs":
+            regions = value.get("regions") or {}
+            successful = sum(region.get("status") == "OK" for region in regions.values())
+            total = len(regions)
+        elif name == "long_range":
+            successful = value.get("successful_points", successful)
+            total = len(value.get("regions") or {})
+        module_details[name] = {
+            "status": module_statuses[name],
+            "successful_points": successful,
+            "expected_points": total,
+            "failed_points": value.get("failed_points", value.get("failed_fetches")),
+            "partial_points": value.get("partial_points"),
+            "error": value.get("error"),
+        }
+    points = {}
+    for point_id, point in config.get("points", {}).items():
+        verified = point.get("status") == "VERIFIED"
+        points[point_id] = {
+            "name": point.get("name"),
+            "region": point.get("region"),
+            "status": point.get("status"),
+            "usable_for_main_chain": verified,
+            "requested_coordinate": {
+                "latitude": point.get("latitude"),
+                "longitude": point.get("longitude"),
+            },
+            "forecast_end_date": point.get("forecast_end_date"),
+            "coordinate_verification": point.get("coordinate_verification"),
+            "reason": None if verified else point.get("reason") or "PROVISIONAL_POINT_EXCLUDED",
+        }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "namespace": "ejina",
+        "generated_at": generated_at,
+        "data_date": data_date,
+        "pipeline_status": pipeline_status,
+        "modules": module_statuses,
+        "module_details": module_details,
+        "points": points,
+        "history_start": {
+            "2025": f"2025-{config.get('history_start_month_day', '09-01')}",
+            "2026": f"2026-{config.get('history_start_month_day', '09-01')}",
+        },
+        "forecast_end_date": config.get("forecast_end_date"),
+        "weather_only_boundary": config.get(
+            "weather_only_boundary",
+            "This namespace contains weather evidence only; downstream ecological and travel interpretation is external.",
+        ),
+        "failure_policy": "Invalid or unavailable Open-Meteo data remains explicit; no external weather source fallback is used.",
+    }
+
+
+def ejina_history_summary(history: dict, point_id: str) -> dict:
+    comparison = ((history.get("region_summaries") or {}).get("points") or {}).get(point_id)
+    if not comparison:
+        return {"status": "FAILED", "reason": "HISTORY_COMPARISON_UNAVAILABLE"}
+    metrics = comparison.get("metrics") or {}
+    return {
+        "status": comparison.get("status", "FAILED"),
+        "period_start": comparison.get("period_start"),
+        "period_end": comparison.get("period_end"),
+        "metrics_2025": metrics.get("2025", {}),
+        "metrics_2026": metrics.get("2026", {}),
+        "delta_2026_minus_2025": comparison.get(
+            "delta_2026_minus_2025",
+            numeric_deltas(metrics.get("2026", {}), metrics.get("2025", {})),
+        ),
+        "same_grid_qa": comparison.get("same_grid_qa", {"status": "UNAVAILABLE"}),
+    }
+
+
+def ejina_long_range_summary(region: dict | None) -> dict:
+    summary = long_range_summary_for_chatgpt(region)
+    summary["interpretation"] = "16-35 day coarse weather background only; no date-level precision or downstream ecological/travel conclusion."
+    return summary
+
+
+def build_ejina_summary(
+    config: dict,
+    generated_at: str,
+    data_date: str,
+    now_local: dt.datetime,
+    hres: dict,
+    history: dict,
+    ensemble: dict,
+    gfs: dict,
+    single_runs: dict,
+    long_range: dict,
+) -> dict:
+    active = active_points(config)
+    history_regions = (history.get("region_summaries") or {}).get("regions", {})
+    long_range_regions = long_range.get("regions") or {}
+    regions = {}
+    for region_id, region_config in config.get("regions", {}).items():
+        point_id = region_config.get("core_point_id")
+        point = active.get(point_id) if point_id else None
+        if not point:
+            regions[region_id] = {
+                "point_id": point_id,
+                "name": region_config.get("name"),
+                "usable_for_main_chain": False,
+                "history_comparison": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "forecast_0_7d": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "forecast_8_15d": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "forecast_16_35d": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "ensemble": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "gfs_crosscheck": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "single_runs": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+                "qa": {"final_status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+            }
+            continue
+        hres_record = (hres.get("points") or {}).get(point_id)
+        gfs_record = (gfs.get("points") or {}).get(point_id)
+        ensemble_record = (ensemble.get("points") or {}).get(point_id)
+        history_region = history_regions.get(region_id)
+        single_region = (single_runs.get("regions") or {}).get(region_id)
+        long_range_region = long_range_regions.get(region_id)
+        history_point = ((history.get("region_summaries") or {}).get("points") or {}).get(point_id) or {}
+        hres_days = (hres_record or {}).get("daily", [])
+        forecast_short = forecast_0_7d(hres_days) if hres_record and hres_record.get("status") == "PASS" else {"status": "UNAVAILABLE", "reason": "HRES_INVALID"}
+        forecast_middle = forecast_8_15d(hres_days) if hres_record and hres_record.get("status") == "PASS" else {"status": "UNAVAILABLE", "reason": "HRES_INVALID"}
+        ensemble_summary = {
+            "status": ensemble_record.get("status") if ensemble_record else "FAILED",
+            "model": ensemble.get("model"),
+            "model_id": ensemble.get("model_id"),
+            "total_members": ensemble.get("total_members"),
+            "distribution": (ensemble_record.get("ensemble") or {}).get("distributions") if ensemble_record else None,
+            "qa": ensemble_record.get("qa") if ensemble_record else None,
+        }
+        regions[region_id] = {
+            "point_id": point_id,
+            "name": region_config.get("name"),
+            "usable_for_main_chain": True,
+            "requested_coordinate": {
+                "latitude": point.get("latitude"),
+                "longitude": point.get("longitude"),
+            },
+            "forecast_end_date": point.get("forecast_end_date", config.get("forecast_end_date")),
+            "history_comparison": ejina_history_summary(history, point_id),
+            "forecast_0_7d": forecast_short,
+            "forecast_8_15d": forecast_middle,
+            "forecast_16_35d": ejina_long_range_summary(long_range_region),
+            "ensemble": ensemble_summary,
+            "gfs_crosscheck": gfs_crosscheck(hres_record, gfs_record),
+            "single_runs": {
+                "status": single_region.get("status") if single_region else "FAILED",
+                "target_time": single_region.get("target_time") if single_region else None,
+                "latest_change": single_region.get("latest_change") if single_region else None,
+                "run_count_requested": single_region.get("run_count_requested") if single_region else None,
+                "run_count_available": single_region.get("run_count_available") if single_region else None,
+            },
+            "qa": {
+                "hres": hres_record.get("qa") if hres_record else None,
+                "history": history_region.get("status") if history_region else "FAILED",
+                "history_same_grid": history_point.get("same_grid_qa"),
+                "ensemble": ensemble_record.get("qa") if ensemble_record else None,
+                "gfs": gfs_record.get("qa") if gfs_record else None,
+                "single_runs": single_region.get("status") if single_region else "FAILED",
+                "long_range": long_range_region.get("qa") if long_range_region else None,
+            },
+        }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "namespace": "ejina",
+        "generated_at": generated_at,
+        "data_date": data_date,
+        "history_start": {
+            "2025": f"2025-{config.get('history_start_month_day', '09-01')}",
+            "2026": f"2026-{config.get('history_start_month_day', '09-01')}",
+        },
+        "forecast_end_date": config.get("forecast_end_date"),
+        "forecast_layers": {
+            "0_7d": "ECMWF IFS HRES",
+            "8_15d": "ECMWF HRES + ECMWF IFS Ensemble + GFS cross-check",
+            "16d_plus": "GFS Ensemble coarse background only",
+        },
+        "regions": regions,
+        "interpretation_boundary": config.get(
+            "weather_only_boundary",
+            "This namespace contains weather evidence only; downstream ecological and travel interpretation is external.",
+        ),
+    }
+
+
+def ejina_failure_result(generated_at: str, data_date: str, error: Exception) -> dict:
+    reason = f"{type(error).__name__}:{error}"
+    modules = {
+        name: failed_module(
+            name,
+            generated_at,
+            data_date,
+            error,
+            artifact_module="long_range_background" if name == "long_range" else name,
+        )
+        for name in EJINA_MODULE_NAMES
+    }
+    status = {
+        "schema_version": SCHEMA_VERSION,
+        "namespace": "ejina",
+        "generated_at": generated_at,
+        "data_date": data_date,
+        "pipeline_status": "FAILED",
+        "modules": {name: "FAILED" for name in EJINA_MODULE_NAMES},
+        "module_details": {name: {"status": "FAILED", "error": reason} for name in EJINA_MODULE_NAMES},
+        "points": {},
+        "history_start": {"2025": None, "2026": None},
+        "forecast_end_date": None,
+        "weather_only_boundary": "Namespace initialization failed before weather data retrieval.",
+        "failure_policy": "Invalid or unavailable Open-Meteo data remains explicit; no external weather source fallback is used.",
+    }
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "namespace": "ejina",
+        "generated_at": generated_at,
+        "data_date": data_date,
+        "history_start": {"2025": None, "2026": None},
+        "forecast_end_date": None,
+        "forecast_layers": {},
+        "regions": {},
+        "error": reason,
+        "interpretation_boundary": "Namespace unavailable; inspect status and module artifacts.",
+    }
+    return {"modules": modules, "status": status, "summary": summary, "config": None}
+
+
+def run_ejina_pipeline(
+    client: ApiClient,
+    generated_at: str,
+    data_date: str,
+    now_utc: dt.datetime,
+) -> dict:
+    config = load_ejina_config()
+    now_local = now_utc.astimezone(LOCAL_TZ)
+    modules: dict[str, dict] = {}
+    steps = (
+        ("hres", run_hres),
+        ("history", lambda cfg, api, gen, day: run_history(cfg, api, gen, day, now_local.date() - dt.timedelta(days=1))),
+        ("gfs", run_gfs),
+        ("ensemble", run_ensemble),
+    )
+    for name, function in steps:
+        log(f"EJINA PHASE: {name.upper()}")
+        try:
+            modules[name] = function(config, client, generated_at, data_date)
+        except Exception as error:
+            modules[name] = failed_module(name, generated_at, data_date, error)
+    log("EJINA PHASE: SINGLE RUNS")
+    try:
+        modules["single_runs"] = run_single_runs(config, client, generated_at, data_date, now_utc)
+    except Exception as error:
+        modules["single_runs"] = failed_module("single_runs", generated_at, data_date, error)
+    log("EJINA PHASE: GFS ENSEMBLE LONG RANGE")
+    try:
+        modules["long_range"] = run_long_range(
+            config,
+            client,
+            generated_at,
+            data_date,
+            now_local,
+            archive_namespace="ejina",
+        )
+    except Exception as error:
+        modules["long_range"] = failed_module(
+            "long_range",
+            generated_at,
+            data_date,
+            error,
+            artifact_module="long_range_background",
+        )
+    summary = build_ejina_summary(
+        config,
+        generated_at,
+        data_date,
+        now_local,
+        modules["hres"],
+        modules["history"],
+        modules["ensemble"],
+        modules["gfs"],
+        modules["single_runs"],
+        modules["long_range"],
+    )
+    status = build_ejina_status(config, generated_at, data_date, modules)
+    return {"config": config, "modules": modules, "status": status, "summary": summary}
+
+
 def failed_module(
     name: str,
     generated_at: str,
@@ -2996,10 +3493,11 @@ def prune_old_raw_archives(current_archive_date: dt.date) -> None:
             archive_date = dt.date.fromisoformat(child.name)
         except ValueError:
             continue
-        raw_dir = child / "raw"
-        if archive_date < cutoff and raw_dir.is_dir():
-            # Retention is intentionally limited to generated raw snapshots only.
-            shutil.rmtree(raw_dir)
+        if archive_date < cutoff:
+            for raw_dir in (child / "raw", child / "ejina" / "raw"):
+                if raw_dir.is_dir():
+                    # Retention is intentionally limited to generated raw snapshots only.
+                    shutil.rmtree(raw_dir)
 
 
 def write_outputs(
@@ -3047,7 +3545,43 @@ def write_outputs(
     prune_old_raw_archives(now_local.date())
 
 
-def build_status(config: dict, generated_at: str, data_date: str, modules: dict[str, dict]) -> dict:
+def write_ejina_outputs(*, now_local: dt.datetime, result: dict) -> None:
+    latest_dir = LATEST_DIR / "ejina"
+    archive_dir = ARCHIVE_DIR / now_local.date().isoformat() / "ejina"
+    modules = result.get("modules") or {}
+    artifacts = {
+        "status.json": result["status"],
+        "hres.json": modules.get("hres", {}),
+        "history_comparison.json": modules.get("history", {}),
+        "ensemble.json": modules.get("ensemble", {}),
+        "gfs.json": modules.get("gfs", {}),
+        "single_runs.json": modules.get("single_runs", {}),
+        "long_range.json": public_long_range_artifact(modules.get("long_range", {})),
+        "summary.json": result["summary"],
+    }
+    for filename, artifact in artifacts.items():
+        write_json(latest_dir / filename, artifact)
+        write_json(archive_dir / filename, compact_module(filename.removesuffix(".json"), artifact))
+    raw_values = {
+        "hres.json.gz": modules.get("hres", {}),
+        "history_comparison.json.gz": modules.get("history", {}),
+        "ensemble.json.gz": modules.get("ensemble", {}),
+        "gfs.json.gz": modules.get("gfs", {}),
+        "single_runs.json.gz": modules.get("single_runs", {}),
+        "long_range.json.gz": modules.get("long_range", {}),
+    }
+    for filename, artifact in raw_values.items():
+        write_gzip_json(archive_dir / "raw" / filename, artifact)
+    prune_old_raw_archives(now_local.date())
+
+
+def build_status(
+    config: dict,
+    generated_at: str,
+    data_date: str,
+    modules: dict[str, dict],
+    namespaces: dict[str, dict] | None = None,
+) -> dict:
     module_names = ("hres", "history", "ensemble", "gfs", "single_runs")
     module_values = {name: modules.get(name, {}).get("status", "FAILED") for name in module_names}
     long_range_status = modules.get("long_range", {}).get("status", "FAILED")
@@ -3067,7 +3601,7 @@ def build_status(config: dict, generated_at: str, data_date: str, modules: dict[
             "usable_for_main_chain": verified,
             "reason": None if verified else point.get("reason") or "PROVISIONAL_POINT_EXCLUDED",
         }
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
         "data_date": data_date,
@@ -3099,6 +3633,9 @@ def build_status(config: dict, generated_at: str, data_date: str, modules: dict[
         "manual_phenology_baseline": config.get("manual_phenology_baseline"),
         "failure_policy": "Any request, QA, model, timezone, missing-data, or grid-representativeness failure is recorded as INVALID; no external weather fallback is used.",
     }
+    if namespaces:
+        result["namespaces"] = namespaces
+    return result
 
 
 def minimal_failure_status(generated_at: str, reason: str) -> dict:
@@ -3198,7 +3735,22 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
             "interpretation_boundary": "Summary unavailable; inspect status.json and module artifacts.",
         }
     modules["summary"] = {"status": "OK" if "error" not in summary else "FAILED"}
-    status = build_status(config, generated_at, data_date, modules)
+    log("PHASE 9: EJINA WEATHER NAMESPACE")
+    try:
+        ejina = run_ejina_pipeline(client, generated_at, data_date, now_utc)
+    except Exception as error:
+        log(f"[ejina] INITIALIZATION FAILED: {type(error).__name__}:{error}")
+        ejina = ejina_failure_result(generated_at, data_date, error)
+    write_ejina_outputs(now_local=now_local, result=ejina)
+    ejina_status = ejina["status"]
+    namespace_status = {
+        "status": ejina_status.get("pipeline_status", "FAILED"),
+        "modules": ejina_status.get("modules", {}),
+        "status_path": "data/latest/ejina/status.json",
+        "summary_path": "data/latest/ejina/summary.json",
+        "long_range_path": "data/latest/ejina/long_range.json",
+    }
+    status = build_status(config, generated_at, data_date, modules, {"ejina": namespace_status})
     write_outputs(
         now_local=now_local,
         status=status,

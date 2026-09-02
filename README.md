@@ -16,6 +16,17 @@
 - spatial_sampling.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/spatial_sampling.json>
 - long_range.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/long_range.json>
 
+额济纳使用独立 `ejina` namespace；日常读取其前两个入口：
+
+- 额济纳 status.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/status.json>
+- 额济纳 summary.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/summary.json>
+- 额济纳 hres.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/hres.json>
+- 额济纳 history_comparison.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/history_comparison.json>
+- 额济纳 ensemble.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/ensemble.json>
+- 额济纳 gfs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/gfs.json>
+- 额济纳 single_runs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/single_runs.json>
+- 额济纳 long_range.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ejina/long_range.json>
+
 ## 职责边界
 
 Codex 负责 GitHub Repository、GitHub Actions、Open-Meteo 请求、原始数据留存、QA、2026 与 2025 同点天气指标、稳定 JSON Schema、历史归档和机器可读输出。
@@ -58,6 +69,18 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 
 K4 老村、H1/H2 禾木、B2 白哈巴东坡、C2 神钟山/峡谷保留为 `PROVISIONAL`，会在 `status.json` 中列出但 `usable_for_main_chain=false`。由于禾木当前没有 VERIFIED 核心点，H1 不会进入正式天气差分。阿禾公路和 G331 只保留 `ROUTE_NOT_VERIFIED` 槽位，未确认用户实际路线前不进入数值链。
 
+### 额济纳独立天气 namespace
+
+额济纳配置位于 `config/ejina_points.json`，不会把额济纳点混入阿勒泰主区域文件。二道桥、四道桥、七道桥均已设为 `VERIFIED`，坐标核验记录和来源链接也保存在配置中：
+
+- EJ1 二道桥：`41.968333, 101.086111`；来源为[北京林业大学研究资料 Table 1](https://j.bjfu.edu.cn/cn/article/pdf/preview/10.12171/j.1000-1522.20210317.pdf)中的 `101°05′10″E, 41°58′06″N`。
+- EJ2 四道桥：`42.001200, 101.137400`；来源为[国家冰川冻土沙漠科学数据中心四道桥元数据](https://www.ncdc.ac.cn/portal/metadata?current_page=1&ef=%E5%9B%9B%E9%81%93%E6%A1%A5%E8%B6%85%E7%BA%A7%E7%AB%99)和[ICOS Sidaoqiao metadata](https://meta.icos-cp.eu/resources/stations/ES_CN-Sdq)。
+- EJ3 七道桥：`42.009167, 101.231389`；来源为[北京林业大学研究资料 Table 1](https://j.bjfu.edu.cn/cn/article/pdf/preview/10.12171/j.1000-1522.20210317.pdf)中的 `101°13′53″E, 42°00′33″N`。
+
+额济纳 namespace 只输出天气证据：HRES、Historical IFS、ECMWF Ensemble、GFS、Single Runs、GFS Ensemble Long Range 和 QA。它没有旅行日期假设；Single Runs 在没有 visit date 时使用可审计的滚动目标时刻。额济纳历史比较从 `2025-09-01` 与 `2026-09-01` 同点、同 `ecmwf_ifs`、同返回模式格点开始，包含 2026 minus 2025 的天气指标差值，并新增 `<15℃` 夜间阈值。
+
+额济纳未来天气输出统一截断到 `2026-10-07`；`2026-10-08` 及以后在 API 返回后直接丢弃，并在每条记录 QA 中保存 `forecast_cutoff_date`、保留行数和丢弃行数。额济纳采用与现有主链相同的三层结构：0–7 天 HRES，8–15 天 HRES + ECMWF Ensemble + GFS，16 天以后只使用 GFS Ensemble 粗粒度背景层。额济纳数据文件不输出植被、生态或旅游解释，后续解释由 ChatGPT 结合外部实拍完成。
+
 ## QA 和失败机制
 
 每条记录都保留 source、endpoint、请求坐标、返回模型格点坐标、返回高程、timezone、UTC offset、retrieval time、模型/run 初始化时间（接口提供时）、格点距离和 QA 结果。QA 包含坐标、格点代表性、时区、模型、elevation 参数和数据完整性检查。
@@ -72,7 +95,9 @@ Open-Meteo 实际返回中，HRES 和 Single Runs 可能在数组边缘出现 `n
 
 2025、2026 均从 8 月 25 日累计到最近已完成的本地日期，使用同一固定请求坐标、同一 `ecmwf_ifs` 和同一时区。它只能称为 `ECMWF IFS historical weather / analysis`，不是 `station observation`，因为它不是气象站实测。
 
-每个地点计算：日最低/最高/平均温度、夜最低温、`<10℃`/`<5℃`/`<2℃`/`<0℃` 寒夜累计、各阈值连续寒夜序列及最大连续长度、昼夜温差、降水、降雪、云量、低云、日照/短波、平均风和最大阵风。
+每个地点计算：日最低/最高/平均温度、夜最低温、`<15℃`/`<10℃`/`<5℃`/`<2℃`/`<0℃` 寒夜累计、各阈值连续寒夜序列及最大连续长度、昼夜温差、降水、降雪、云量、低云、日照/短波、平均风和最大阵风。
+
+额济纳 namespace 额外从 `09-01` 开始，并增加 `<15℃` 夜间累计；其 `history_comparison.json` 保留同点同模式格点 QA 与 `delta_2026_minus_2025`。阿勒泰主 namespace 仍使用原来的 `08-25` 起点和字段语义。
 
 `coldness_index` 是本项目的内部相对比较指标，不是官方物候模型，公式为每个完整日累加：
 
@@ -94,6 +119,8 @@ Ensemble 仅对 B1、K1、C1 核心点计算 51 成员的 mean、median、p10、
 ## 16–35 Day Long-Range Background
 
 `data/latest/long_range.json` 是新增的长期背景层。当前实际核验的 Open-Meteo GFS Ensemble 配置为：`model_id=ncep_gefs05`、31 个序列（基准/控制序列加 `member01`–`member30`）、全球覆盖、约 0.5°（约 50 km）、原生 3 小时。官方页面当前一方面显示最多 36 天，另一方面参数表仍列 `forecast_days` 为 0–35；本项目用真实接口验证过 `forecast_days=36`，并将返回的本地日期数和非空 lead day 再做 QA。如果接口以后不再接受该请求，模块会写 `FAILED`，不会换用其他天气源。
+
+额济纳的公开长期文件位于 `data/latest/ejina/long_range.json`，同样使用 `ncep_gefs05` 和 31 个序列，并执行 `2026-10-07` 截止闸门；截至日期之后的窗口不会写入公开 forecast 数据。
 
 该层按固定 3 天块聚合为 D16–D18、D19–D21、D22–D24、D25–D27、D28–D30、D31–D33、D34–D35，不在公开长期文件中展示逐小时成员数组。Open-Meteo 可能把集合原生 3 小时序列插值为逐小时数组，因此这些数组只用于内部聚合和审计，不能被解释为逐小时精确预报。
 
@@ -123,6 +150,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 .
 ├── .github/workflows/update-weather.yml
 ├── config/points.json
+├── config/ejina_points.json
 ├── data/
 │   ├── latest/
 │   │   ├── status.json
@@ -133,11 +161,13 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── gfs.json
 │   │   ├── single_runs.json
 │   │   ├── spatial_sampling.json
-│   │   └── long_range.json
+│   │   ├── long_range.json
+│   │   └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json
 │   └── archive/YYYY-MM-DD/
 │       ├── 同名压缩后的每日 JSON
-│       └── raw/*.json.gz
-├── schemas/{status,summary,module,long_range}.schema.json
+│       ├── raw/*.json.gz
+│       └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json + raw/*.json.gz
+├── schemas/{status,summary,module,long_range,ejina_points,ejina_status,ejina_summary}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt

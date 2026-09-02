@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/schemas/ejina_summary.schema.json",
+  "title": "Ejina weather-only ChatGPT summary",
+  "type": "object",
+  "required": ["schema_version", "namespace", "generated_at", "data_date", "history_start", "forecast_end_date", "forecast_layers", "regions", "interpretation_boundary"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.1.0"},
+    "namespace": {"type": "string", "const": "ejina"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "data_date": {"type": "string", "format": "date"},
+    "history_start": {"type": "object", "required": ["2025", "2026"], "properties": {"2025": {"type": ["string", "null"], "format": "date"}, "2026": {"type": ["string", "null"], "format": "date"}}, "additionalProperties": false},
+    "forecast_end_date": {"type": ["string", "null"], "format": "date"},
+    "forecast_layers": {"type": "object"},
+    "regions": {
+      "type": "object",
+      "minProperties": 3,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["point_id", "name", "usable_for_main_chain", "history_comparison", "forecast_0_7d", "forecast_8_15d", "forecast_16_35d", "ensemble", "gfs_crosscheck", "single_runs", "qa"],
+        "properties": {
+          "point_id": {"type": ["string", "null"]},
+          "name": {"type": "string"},
+          "usable_for_main_chain": {"type": "boolean"},
+          "requested_coordinate": {"type": "object"},
+          "forecast_end_date": {"type": ["string", "null"], "format": "date"},
+          "history_comparison": {"type": "object"},
+          "forecast_0_7d": {"type": "object"},
+          "forecast_8_15d": {"type": "object"},
+          "forecast_16_35d": {"type": "object"},
+          "ensemble": {"type": "object"},
+          "gfs_crosscheck": {"type": "object"},
+          "single_runs": {"type": "object"},
+          "qa": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "interpretation_boundary": {"type": "string"}
+  },
+  "additionalProperties": true
+}
