@@ -70,9 +70,15 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 - K5 喀纳斯游客服务中心/换乘中心：`48.692136, 87.029775`（[高德公开 POI](https://ditu.amap.com/place/BV09303042)）
 - K7 喀纳斯观鱼台主体：`48.72578, 86.99051`（[Mapcarta / OpenStreetMap 节点](https://mapcarta.com/N2970777553)）
 - B1 白哈巴村核心：`48.69583, 86.78382`
+- H1 禾木村核心/村庄河谷：`48.56921, 87.43037`（[Mapcarta / OpenStreetMap Kom 节点](https://mapcarta.com/N6118572418)）
+- H2 禾木村观景点/后山白桦坡：`48.57648, 87.42650`（[Mapcarta / OpenStreetMap 节点](https://mapcarta.com/N5813997796)）
+- H3 禾木桥/禾木河谷：`48.570439, 87.427425`（[Wikimedia Commons 地理标注照片](https://commons.wikimedia.org/wiki/File%3A%E6%96%B0%E7%96%86-%E7%A6%BE%E6%9C%A8%E6%A1%A5%E4%B8%8A%E8%A7%82%E6%99%AF_-_panoramio.jpg)）
+- H4 凤凰观景平台/后山森林带：`48.57207, 87.41871`（[Mapcarta / OpenStreetMap 节点](https://mapcarta.com/N10303362686)）
 - C1 可可托海镇/额尔齐斯河谷：`47.22061, 89.80911`
 
-喀纳斯注册为三个子区：`sanwan` 三湾河谷（K1/K2/K3）、`lake` 湖区（K4/K5/K6）和 `guanyutai` 观鱼台山地（K7/K8/K9）。K4、K6、K8、K9，以及 H1/H2 禾木、B2 白哈巴东坡、C2 神钟山/峡谷保留为 `PROVISIONAL`，会在 `status.json` 中列出但 `usable_for_main_chain=false`。其中 K6 使用公开湖区参考坐标，但尚未核实具体岸线/森林位置；K8/K9 是观鱼台周边山坡候选坐标。当前三湾有 2 个 VERIFIED 独立 HRES 格点，湖区和观鱼台各只有 1 个 VERIFIED 粗格点；后两者按各自实际唯一格点计算，并在 `sampling` 中保留低空间分辨率事实，不会用 PROVISIONAL 点补齐。由于禾木当前没有 VERIFIED 核心点，H1 不会进入正式天气差分。阿禾公路和 G331 只保留 `ROUTE_NOT_VERIFIED` 槽位，未确认用户实际路线前不进入数值链。
+喀纳斯注册为三个子区：`sanwan` 三湾河谷（K1/K2/K3）、`lake` 湖区（K4/K5/K6）和 `guanyutai` 观鱼台山地（K7/K8/K9）。K4、K6、K8、K9、B2 白哈巴东坡和 C2 神钟山/峡谷仍保留为 `PROVISIONAL`，会在 `status.json` 中列出但 `usable_for_main_chain=false`。其中 K6 使用公开湖区参考坐标，但尚未核实具体岸线/森林位置；K8/K9 是观鱼台周边山坡候选坐标。当前三湾有 2 个 VERIFIED 独立 HRES 格点，湖区和观鱼台各只有 1 个 VERIFIED 粗格点；后两者按各自实际唯一格点计算，并在 `sampling` 中保留低空间分辨率事实，不会用 PROVISIONAL 点补齐。
+
+禾木已注册为两个子区：`valley` 村庄河谷（H1/H3）和 `backhill` 后山观景区（H2/H4）。四个点均经过公开地图或公开地理标注资料核验并设为 `VERIFIED`；同一返回模式格点只计一个独立样本。子区内部对 unique model grids 等权，`hemu` composite 再对 valley 与 backhill 等权，不按景点数量加权。2026-09-01 用户提供的“整体全绿、尚未进入明显黄叶期”仍只保留为独立 `manual_phenology_baseline`，不参与天气计算。阿禾公路和 G331 只保留 `ROUTE_NOT_VERIFIED` 槽位，未确认用户实际路线前不进入禾木 composite 或其他数值链。
 
 ### 喀纳斯分区与返回格点聚合
 
@@ -127,7 +133,7 @@ max(0, 10 - daily_mean)
 
 每个 VERIFIED 核心区域提供 `regions.<region>.years.<year>.d0_7`、`d8_15` 和 `d16_to_10_06` 三个窗口。以 2026-09-02 为例，三个窗口分别是 09-02/09-09、09-10/09-17、09-18/10-06，均包含首尾；日期随每日 anchor 滚动，10-07 及以后永远不请求、不写入输出。窗口同时保留每日温度、降水、降雪、日照和最大阵风，以及窗口统计和前 3 日/后 3 日平均温度变化。
 
-每个核心点的 `same_grid_qa` 会检查 2023、2024、2025 的请求坐标、返回模式格点、返回高程、格点距离、时区、模型和 API request metadata。三年返回格点完全一致且每年 QA 通过时，`cross_year_comparison_usable=true`；任何年份失败、格点不一致或超过现有历史格点距离限制时，点和区域标记为 `FAILED`，不进入跨年比较。禾木没有 VERIFIED core point，保持 `UNAVAILABLE`，不会使用 H1/H2。
+每个核心点的 `same_grid_qa` 会检查 2023、2024、2025 的请求坐标、返回模式格点、返回高程、格点距离、时区、模型和 API request metadata。三年返回格点完全一致且每年 QA 通过时，`cross_year_comparison_usable=true`；任何年份失败、格点不一致或超过现有历史格点距离限制时，点和区域标记为 `FAILED`，不进入跨年比较。禾木的 valley/backhill 也执行相同三年同格点闸门，只有两个子区均通过后才形成 `hemu` composite。
 
 喀纳斯在该文件中额外提供 `regions.kanas.subregions.<subregion>.years.<year>.<window>` 和 `regions.kanas.composite.years.<year>.<window>`。2023、2024、2025 的历史路径与 2026 的 HRES 预报使用同一注册点集合、同一返回格点去重算法和同一两级聚合规则；不同 API 产品的网格坐标本身不强行要求相同。只有历史参考年之间的 `same_grid_qa` 通过后，历史跨年聚合才可用。
 
@@ -135,9 +141,9 @@ max(0, 10 - daily_mean)
 
 ## 空间采样、集合和风雪风险
 
-白哈巴、喀纳斯、可可托海对每个 VERIFIED 核心点请求核心 + N/S/E/W/NE/NW/SE/SW 约 12 km 的同源 HRES 样本；禾木在核心点 VERIFIED 前跳过。程序保存每个请求坐标和返回格点坐标，并按返回格点去重。`requested_samples=9` 不等于 9 个独立模式样本；输出 `unique_model_cells`、重复请求数、核心区温度范围和按日期/唯一格点的 `cold_pool_coverage`，用于区分广泛覆盖与单格点现象。
+白哈巴、喀纳斯、禾木、可可托海对每个 VERIFIED 核心点请求核心 + N/S/E/W/NE/NW/SE/SW 约 12 km 的同源 HRES 样本；程序保存每个请求坐标和返回格点坐标，并按返回格点去重。`requested_samples=9` 不等于 9 个独立模式样本；输出 `unique_model_cells`、重复请求数、核心区温度范围和按日期/唯一格点的 `cold_pool_coverage`，用于区分广泛覆盖与单格点现象。
 
-Ensemble 仅对 B1、K1、C1 核心点计算 51 成员的 mean、median、p10、p25、p75、p90、spread，以及夜最低温 `<5℃`、`<2℃`、`<0℃` 的成员支持比例。约 25 km Ensemble 只表达信号稳健性，不能当作村级精确温度，也不与 HRES 简单平均。
+Ensemble 仅对 B1、K1、H1、C1 核心点计算 51 成员的 mean、median、p10、p25、p75、p90、spread，以及夜最低温 `<5℃`、`<2℃`、`<0℃` 的成员支持比例。约 25 km Ensemble 只表达信号稳健性，不能当作村级精确温度，也不与 HRES 简单平均。
 
 ## 16–35 Day Long-Range Background
 
@@ -214,14 +220,14 @@ python3.12 -m unittest discover -s tests -v
 python3.12 src/pipeline.py
 ```
 
-运行日志会打印类似 `[B1] HRES FETCH OK`、`[B1] GRID QA PASS`、`[B1] HISTORY 2025 OK` 和 `[hemu] SKIPPED: PROVISIONAL`。JSON Schema 文件位于 `schemas/`，机器端应先检查 `status.json`，再按模块状态读取 `summary.json` 或相应明细。
+运行日志会打印类似 `[B1] HRES FETCH OK`、`[B1] GRID QA PASS`、`[B1] HISTORY 2025 OK`、`[H1] HRES FETCH OK` 和 `[K4] SKIPPED: PROVISIONAL`。JSON Schema 文件位于 `schemas/`，机器端应先检查 `status.json`，再按模块状态读取 `summary.json` 或相应明细。
 
 ## 推荐的 ChatGPT 每日读取顺序
 
 1. 读取 `status.json`，确认 `pipeline_status` 和 `modules`；任何 `FAILED` 模块都按缺失证据处理。
-2. 日常读取 `phenology_weather_summary.json`，按 `regions` 读取 B1、Kanas 三子区/composite、C1 的 2023–2026 窗口统计；该文件不含 hourly/daily 原始数组。
+2. 日常读取 `phenology_weather_summary.json`，按 `regions` 读取 B1、Kanas 三子区/composite、Hemu 两子区/composite、C1 的 2023–2026 窗口统计；该文件不含 hourly/daily 原始数组。
 3. 读取 `summary.json`，按 `regions` 的 `visit_date` 映射 10/1 白哈巴、10/2 喀纳斯、10/3 喀纳斯三湾→白哈巴→铁贾公路→契巴罗衣、10/4 禾木、10/5 禾木→阿禾公路→G331→可可托海、10/6 可可托海、10/7 返程。
-4. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层；需要查看完整历史同期后续路径时读取 `history_forward.json`，先检查其 `status`、Kanas `subregion_aggregation_status` 和各区域 `same_grid_qa`。
+4. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层；需要查看完整历史同期后续路径时读取 `history_forward.json`，先检查其 `status`、Kanas/Hemu `subregion_aggregation_status` 和各区域 `same_grid_qa`。
 5. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
 6. 读取 `grid_registry.json`、`long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED`、`PARTIAL` 或 `UNDETERMINED` 时保留不确定性。
 

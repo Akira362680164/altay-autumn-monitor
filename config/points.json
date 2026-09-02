@@ -25,7 +25,7 @@
     },
     "hemu": {
       "name": "禾木",
-      "core_point_id": null,
+      "core_point_id": "H1",
       "primary_visit_date": "2026-10-04",
       "visit_dates": ["2026-10-04", "2026-10-05"]
     },
@@ -51,6 +51,20 @@
       "name": "观鱼台山地",
       "point_ids": ["K7", "K8", "K9"],
       "minimum_verified_unique_grids": 1
+    }
+  },
+  "hemu_subregions": {
+    "valley": {
+      "name": "村庄河谷",
+      "point_ids": ["H1", "H3"],
+      "minimum_verified_unique_grids": 1,
+      "notes": "禾木村核心与禾木桥/禾木河谷；同一返回模式格点只计一次"
+    },
+    "backhill": {
+      "name": "后山观景区",
+      "point_ids": ["H2", "H4"],
+      "minimum_verified_unique_grids": 1,
+      "notes": "禾木村观景点与凤凰观景平台；同一返回模式格点只计一次"
     }
   },
   "points": {
@@ -177,22 +191,72 @@
       "reason": "观鱼台周边山坡候选坐标，待公开地图地物或实地路线核验"
     },
     "H1": {
-      "name": "禾木村/河谷",
+      "name": "禾木村核心/村庄河谷",
       "region": "hemu",
-      "status": "PROVISIONAL",
-      "role": "core_candidate",
-      "latitude": 48.56944,
-      "longitude": 87.43444,
-      "reason": "待地图平台和实际路线交叉核验"
+      "status": "VERIFIED",
+      "role": "core",
+      "subregion": "valley",
+      "latitude": 48.56921,
+      "longitude": 87.43037,
+      "coordinate_verification": "公开 OpenStreetMap place=village 节点，经 Mapcarta 交叉呈现；名称包含 Hemu Village/禾木村",
+      "coordinate_sources": [
+        {
+          "name": "Mapcarta / OpenStreetMap Kom（禾木村）",
+          "url": "https://mapcarta.com/N6118572418"
+        }
+      ],
+      "previous_provisional_coordinate": {
+        "latitude": 48.56944,
+        "longitude": 87.43444
+      }
     },
     "H2": {
-      "name": "禾木观景点/后山白桦坡",
+      "name": "禾木村观景点/后山白桦坡",
       "region": "hemu",
-      "status": "PROVISIONAL",
-      "role": "supporting_candidate",
+      "status": "VERIFIED",
+      "role": "subregion_anchor",
+      "subregion": "backhill",
       "latitude": 48.57648,
       "longitude": 87.4265,
-      "reason": "待地图平台和实际路线交叉核验"
+      "coordinate_verification": "公开 OpenStreetMap tourism=viewpoint 节点，经 Mapcarta 交叉呈现",
+      "coordinate_sources": [
+        {
+          "name": "Mapcarta / OpenStreetMap 禾木村观景点",
+          "url": "https://mapcarta.com/N5813997796"
+        }
+      ]
+    },
+    "H3": {
+      "name": "禾木桥/禾木河谷",
+      "region": "hemu",
+      "status": "VERIFIED",
+      "role": "subregion_anchor",
+      "subregion": "valley",
+      "latitude": 48.570439,
+      "longitude": 87.427425,
+      "coordinate_verification": "公开 Wikimedia Commons 地理标注的禾木桥观景照片坐标；照片页面关联 OpenStreetMap 与 Hemu River 分类，作为桥区河谷锚点",
+      "coordinate_sources": [
+        {
+          "name": "Wikimedia Commons 禾木桥地理标注照片",
+          "url": "https://commons.wikimedia.org/wiki/File%3A%E6%96%B0%E7%96%86-%E7%A6%BE%E6%9C%A8%E6%A1%A5%E4%B8%8A%E8%A7%82%E6%99%AF_-_panoramio.jpg"
+        }
+      ]
+    },
+    "H4": {
+      "name": "凤凰观景平台/后山森林带",
+      "region": "hemu",
+      "status": "VERIFIED",
+      "role": "subregion_anchor",
+      "subregion": "backhill",
+      "latitude": 48.57207,
+      "longitude": 87.41871,
+      "coordinate_verification": "公开 OpenStreetMap tourism=viewpoint 节点，经 Mapcarta 交叉呈现；页面标注为 Phoenix Stand Sightseeing Platform/凤凰观景平台",
+      "coordinate_sources": [
+        {
+          "name": "Mapcarta / OpenStreetMap Phoenix Stand Sightseeing Platform",
+          "url": "https://mapcarta.com/N10303362686"
+        }
+      ]
     },
     "B2": {
       "name": "白哈巴村东坡",

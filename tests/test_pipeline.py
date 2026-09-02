@@ -84,9 +84,13 @@ class PipelineUnitTests(unittest.TestCase):
         active = pipeline.active_points(config)
         excluded = pipeline.excluded_points(config)
         self.assertIn("B1", active)
-        self.assertNotIn("H1", active)
-        self.assertEqual(excluded["H1"]["status"], "PROVISIONAL")
-        self.assertFalse(excluded["H1"]["usable_for_main_chain"])
+        self.assertIn("H1", active)
+        self.assertIn("H2", active)
+        self.assertIn("H3", active)
+        self.assertIn("H4", active)
+        self.assertNotIn("K4", active)
+        self.assertEqual(excluded["K4"]["status"], "PROVISIONAL")
+        self.assertFalse(excluded["K4"]["usable_for_main_chain"])
         self.assertEqual(excluded["AHE_ROAD_G681"]["status"], "ROUTE_NOT_VERIFIED")
 
     def test_grid_cell_deduplication(self):
@@ -118,6 +122,39 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertNotIn("K4", pipeline.active_points(config))
         self.assertNotIn("K6", pipeline.history_forward_point_ids(config))
         self.assertNotIn("K8", pipeline.history_forward_point_ids(config))
+
+    def test_hemu_subregion_registry_keeps_routes_out(self):
+        config = pipeline.load_config()
+        registry = pipeline.hemu_subregion_registry(config)
+        self.assertEqual(set(registry), {"valley", "backhill"})
+        self.assertEqual(registry["valley"]["point_ids"], ["H1", "H3"])
+        self.assertEqual(registry["backhill"]["point_ids"], ["H2", "H4"])
+        self.assertEqual(
+            pipeline.hemu_subregion_point_ids(config, "valley", verified_only=True),
+            ["H1", "H3"],
+        )
+        self.assertEqual(
+            pipeline.hemu_subregion_point_ids(config, "backhill", verified_only=True),
+            ["H2", "H4"],
+        )
+        point_ids = pipeline.history_forward_point_ids(config)
+        self.assertTrue({"H1", "H2", "H3", "H4"}.issubset(point_ids))
+        self.assertNotIn("AHE_ROAD_G681", point_ids)
+        self.assertNotIn("G331", point_ids)
+
+    def test_hemu_composite_uses_equal_subregion_weighting(self):
+        definition = {
+            "start_date": "2026-09-02",
+            "end_date": "2026-09-09",
+        }
+        subregions = [
+            {"status": "OK", "days_available": 8, "metrics": {"temperature_mean_c": 2}},
+            {"status": "OK", "days_available": 8, "metrics": {"temperature_mean_c": 10}},
+        ]
+        composite = pipeline.equal_mean_subregion_window(subregions, definition, region_id="hemu")
+        self.assertEqual(composite["status"], "OK")
+        self.assertEqual(composite["metrics"]["temperature_mean_c"], 6.0)
+        self.assertIn("equal_mean_of_hemu_subregions", composite["aggregation"])
 
     def test_kanas_unique_grid_sampling_and_equal_grid_mean(self):
         config = pipeline.load_config()
@@ -269,6 +306,15 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(light["regions"]["kanas"]["composite"]["years"]["2026"]["d0_7"]["status"], "OK")
         self.assertEqual(light["regions"]["kanas"]["composite"]["years"]["2026"]["d8_15"]["status"], "PARTIAL")
         self.assertIsNotNone(light["regions"]["kanas"]["composite"]["years"]["2026"]["d8_15"]["temperature_mean_c"])
+        self.assertEqual(set(light["regions"]["hemu"]["subregions"]), {"valley", "backhill"})
+        self.assertEqual(
+            light["regions"]["hemu"]["composite"]["years"]["2023"]["d0_7"]["start_date"],
+            "2023-09-02",
+        )
+        self.assertEqual(
+            light["regions"]["hemu"]["composite"]["years"]["2026"]["d0_7"]["status"],
+            "OK",
+        )
         serialized = json.dumps(light, ensure_ascii=False).lower()
         self.assertNotIn('"hourly"', serialized)
         self.assertNotIn('"daily"', serialized)
@@ -531,7 +577,7 @@ class PipelineUnitTests(unittest.TestCase):
             self.assertEqual(params["elevation"], "nan")
             self.assertEqual(params["timezone"], "Asia/Shanghai")
             self.assertEqual(params["end_date"][5:], "10-06")
-        for region_id in ("baihaba", "kanas", "keketuohai"):
+        for region_id in ("baihaba", "kanas", "hemu", "keketuohai"):
             region = result["regions"][region_id]
             self.assertEqual(region["status"], "OK")
             self.assertTrue(region["cross_year_comparison_usable"])
@@ -555,9 +601,14 @@ class PipelineUnitTests(unittest.TestCase):
                 set(sampling["by_year"]),
                 {"2023", "2024", "2025"},
             )
-        self.assertEqual(result["regions"]["hemu"]["status"], "UNAVAILABLE")
-        self.assertFalse(result["regions"]["hemu"]["usable_for_main_chain"])
-        self.assertNotIn("H1", result["points"])
+        hemu = result["regions"]["hemu"]
+        self.assertEqual(hemu["status"], "OK")
+        self.assertTrue(hemu["usable_for_main_chain"])
+        self.assertEqual(set(hemu["subregions"]), {"valley", "backhill"})
+        self.assertEqual(hemu["composite"]["status"], "OK")
+        self.assertEqual(set(hemu["subregions"]["valley"]["point_ids"]), {"H1", "H3"})
+        self.assertEqual(set(hemu["subregions"]["backhill"]["point_ids"]), {"H2", "H4"})
+        self.assertIn("H1", result["points"])
 
     def test_history_forward_same_grid_failure_blocks_cross_year_comparison(self):
         config = pipeline.load_config()
@@ -580,6 +631,9 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertFalse(point["cross_year_comparison_usable"])
         self.assertEqual(point["same_grid_qa"]["pairwise"]["2023_vs_2024"], "FAIL")
         self.assertEqual(result["regions"]["baihaba"]["status"], "FAILED")
+        self.assertEqual(result["regions"]["hemu"]["status"], "FAILED")
+        self.assertEqual(result["regions"]["hemu"]["composite"]["status"], "INVALID")
+        self.assertFalse(result["regions"]["hemu"]["composite"]["cross_year_comparison_usable"])
 
     def test_history_forward_status_failure_does_not_hide_short_chain(self):
         config = pipeline.load_config()
@@ -673,6 +727,11 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertIn("weather_driver_vs_2025", region_required)
         self.assertIn("weather_driver_vs_2023", schema["properties"]["regions"]["additionalProperties"]["properties"])
         self.assertIn("weather_driver_vs_2024", schema["properties"]["regions"]["additionalProperties"]["properties"])
+
+        compact_schema_path = ROOT / "schemas" / "phenology_weather_summary.schema.json"
+        with compact_schema_path.open(encoding="utf-8") as handle:
+            compact_schema = json.load(handle)
+        self.assertIn("hemu_aggregation", compact_schema["properties"]["model_policy"].get("properties", {}))
 
     def test_zero_values_are_not_treated_as_missing_in_risk_checks(self):
         wet_snow_day = self.make_day("2026-09-01", 0)
@@ -812,8 +871,9 @@ class PipelineUnitTests(unittest.TestCase):
 
     def test_long_range_provisional_and_summary_boundaries(self):
         config = pipeline.load_config()
-        self.assertNotIn("H1", pipeline.active_points(config))
-        self.assertFalse(pipeline.excluded_points(config)["H1"]["usable_for_main_chain"])
+        self.assertIn("H1", pipeline.active_points(config))
+        self.assertIn("H4", pipeline.active_points(config))
+        self.assertFalse(pipeline.excluded_points(config)["K4"]["usable_for_main_chain"])
         unavailable = pipeline.long_range_summary_for_chatgpt({
             "status": "UNAVAILABLE",
             "reason": "NO_VERIFIED_CORE_POINT",

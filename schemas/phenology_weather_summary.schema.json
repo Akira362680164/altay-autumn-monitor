@@ -23,7 +23,7 @@
     "data_date": {"type": "string", "format": "date"},
     "forecast_date": {"type": "string", "format": "date"},
     "source": {"type": "string", "const": "Open-Meteo"},
-    "model_policy": {"type": "object", "required": ["historical", "forecast_2026", "timezone", "cell_selection", "elevation", "grid_deduplication", "kanas_aggregation"]},
+    "model_policy": {"type": "object", "required": ["historical", "forecast_2026", "timezone", "cell_selection", "elevation", "grid_deduplication", "kanas_aggregation"], "properties": {"hemu_aggregation": {"type": "string"}}, "additionalProperties": true},
     "window_definitions": {"type": "object", "additionalProperties": {"type": "object"}},
     "weather_only": {"type": "boolean", "const": true},
     "interpretation_boundary": {"type": "string"},

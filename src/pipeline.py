@@ -78,7 +78,7 @@ LONG_RANGE_LEAD_END = 35
 LONG_RANGE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gusts_10m"]
 LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
 LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
-CORE_REGION_IDS = ("baihaba", "kanas", "keketuohai")
+CORE_REGION_IDS = ("baihaba", "kanas", "hemu", "keketuohai")
 THRESHOLDS_C = (15.0, 10.0, 5.0, 2.0, 0.0)
 DEFAULT_HISTORY_YEARS = (2025, 2026)
 HISTORY_FORWARD_YEARS = (2023, 2024, 2025)
@@ -187,6 +187,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         raise ValueError("unsupported points schema version")
     if config.get("namespace") != "ejina":
         validate_kanas_subregion_config(config)
+        validate_hemu_subregion_config(config)
     return config
 
 
@@ -1192,6 +1193,15 @@ def history_forward_same_grid_qa(years: dict[str, dict]) -> dict:
 
 
 KANAS_SUBREGION_KEYS = ("sanwan", "lake", "guanyutai")
+HEMU_SUBREGION_KEYS = ("valley", "backhill")
+SUBREGION_KEYS_BY_REGION = {
+    "kanas": KANAS_SUBREGION_KEYS,
+    "hemu": HEMU_SUBREGION_KEYS,
+}
+SUBREGION_CONFIG_KEYS = {
+    "kanas": "kanas_subregions",
+    "hemu": "hemu_subregions",
+}
 LIGHTWEIGHT_WINDOW_METRIC_KEYS = (
     "temperature_mean_c",
     "temperature_max_mean_c",
@@ -1212,39 +1222,56 @@ LIGHTWEIGHT_WINDOW_METRIC_KEYS = (
 )
 
 
-def validate_kanas_subregion_config(config: dict) -> None:
-    configured = config.get("kanas_subregions")
+def validate_subregion_config(
+    config: dict,
+    region_id: str,
+    subregion_keys: tuple[str, ...],
+    config_key: str,
+) -> None:
+    configured = config.get(config_key)
     if not isinstance(configured, dict):
         return
     seen = set()
-    for subregion_id in KANAS_SUBREGION_KEYS:
+    for subregion_id in subregion_keys:
         item = configured.get(subregion_id)
         if not isinstance(item, dict) or not isinstance(item.get("point_ids"), list) or not item.get("point_ids"):
-            raise ValueError(f"kanas subregion registry missing point_ids: {subregion_id}")
+            raise ValueError(f"{region_id} subregion registry missing point_ids: {subregion_id}")
         for point_id in item["point_ids"]:
             if point_id in seen:
-                raise ValueError(f"kanas point appears in multiple subregions: {point_id}")
+                raise ValueError(f"{region_id} point appears in multiple subregions: {point_id}")
             seen.add(point_id)
             point = config.get("points", {}).get(point_id)
-            if not isinstance(point, dict) or point.get("region") != "kanas":
-                raise ValueError(f"kanas subregion point is not a Kanas point: {point_id}")
+            if not isinstance(point, dict) or point.get("region") != region_id:
+                raise ValueError(f"{region_id} subregion point is not a {region_id} point: {point_id}")
             if point.get("subregion") != subregion_id:
-                raise ValueError(f"kanas point subregion mismatch: {point_id}")
+                raise ValueError(f"{region_id} point subregion mismatch: {point_id}")
 
 
-def kanas_subregion_registry(config: dict) -> dict[str, dict]:
-    """Return the explicit Kanas subregion registry with a safe v1 fallback."""
-    configured = config.get("kanas_subregions")
+def validate_kanas_subregion_config(config: dict) -> None:
+    validate_subregion_config(config, "kanas", KANAS_SUBREGION_KEYS, "kanas_subregions")
+
+
+def validate_hemu_subregion_config(config: dict) -> None:
+    validate_subregion_config(config, "hemu", HEMU_SUBREGION_KEYS, "hemu_subregions")
+
+
+def region_subregion_registry(config: dict, region_id: str) -> dict[str, dict]:
+    """Return the explicit spatial registry for a registered region."""
+    subregion_keys = SUBREGION_KEYS_BY_REGION.get(region_id, ())
+    config_key = SUBREGION_CONFIG_KEYS.get(region_id)
+    configured = config.get(config_key) if config_key else None
     if not isinstance(configured, dict) or not configured:
-        return {
-            "sanwan": {
-                "name": "三湾河谷",
-                "point_ids": ["K1", "K2", "K3"],
-                "minimum_verified_unique_grids": 1,
+        if region_id == "kanas":
+            return {
+                "sanwan": {
+                    "name": "三湾河谷",
+                    "point_ids": ["K1", "K2", "K3"],
+                    "minimum_verified_unique_grids": 1,
+                }
             }
-        }
+        return {}
     result = {}
-    for subregion_id in KANAS_SUBREGION_KEYS:
+    for subregion_id in subregion_keys:
         item = configured.get(subregion_id)
         if not isinstance(item, dict):
             continue
@@ -1259,18 +1286,28 @@ def kanas_subregion_registry(config: dict) -> dict[str, dict]:
     return result
 
 
-def kanas_subregion_point_ids(
+def kanas_subregion_registry(config: dict) -> dict[str, dict]:
+    """Return the explicit Kanas subregion registry with a safe v1 fallback."""
+    return region_subregion_registry(config, "kanas")
+
+
+def hemu_subregion_registry(config: dict) -> dict[str, dict]:
+    return region_subregion_registry(config, "hemu")
+
+
+def region_subregion_point_ids(
     config: dict,
+    region_id: str,
     subregion_id: str,
     *,
     verified_only: bool = False,
 ) -> list[str]:
-    registry = kanas_subregion_registry(config)
+    registry = region_subregion_registry(config, region_id)
     item = registry.get(subregion_id) or {}
     result = []
     for point_id in item.get("point_ids", []):
         point = config.get("points", {}).get(point_id)
-        if not isinstance(point, dict) or point.get("region") != "kanas":
+        if not isinstance(point, dict) or point.get("region") != region_id:
             continue
         if verified_only and point.get("status") != "VERIFIED":
             continue
@@ -1278,16 +1315,39 @@ def kanas_subregion_point_ids(
     return result
 
 
+def kanas_subregion_point_ids(
+    config: dict,
+    subregion_id: str,
+    *,
+    verified_only: bool = False,
+) -> list[str]:
+    return region_subregion_point_ids(config, "kanas", subregion_id, verified_only=verified_only)
+
+
+def hemu_subregion_point_ids(
+    config: dict,
+    subregion_id: str,
+    *,
+    verified_only: bool = False,
+) -> list[str]:
+    return region_subregion_point_ids(config, "hemu", subregion_id, verified_only=verified_only)
+
+
 def history_forward_point_ids(config: dict) -> list[str]:
     """Return only points that the Altay forward-history module is allowed to query."""
     point_ids = []
     points = active_points(config)
     for region_id, region_config in config.get("regions", {}).items():
-        if region_id == "kanas":
+        if region_id in SUBREGION_KEYS_BY_REGION:
             candidates = [
                 point_id
-                for subregion_id in KANAS_SUBREGION_KEYS
-                for point_id in kanas_subregion_point_ids(config, subregion_id, verified_only=True)
+                for subregion_id in SUBREGION_KEYS_BY_REGION[region_id]
+                for point_id in region_subregion_point_ids(
+                    config,
+                    region_id,
+                    subregion_id,
+                    verified_only=True,
+                )
             ]
         else:
             candidates = [region_config.get("core_point_id")]
@@ -1628,14 +1688,15 @@ def aggregate_grid_window(records: list[dict], definition: dict, *, allow_partia
     }
 
 
-def build_kanas_history_subregion(
+def build_region_history_subregion(
     config: dict,
+    region_id: str,
     subregion_id: str,
     point_results: dict[str, dict],
     forecast_date: dt.date,
 ) -> dict:
-    registry_item = kanas_subregion_registry(config).get(subregion_id) or {}
-    candidate_ids = kanas_subregion_point_ids(config, subregion_id)
+    registry_item = region_subregion_registry(config, region_id).get(subregion_id) or {}
+    candidate_ids = region_subregion_point_ids(config, region_id, subregion_id)
     minimum_grids = registry_item.get("minimum_verified_unique_grids", 1)
     consistent_point_ids = [
         point_id
@@ -1690,7 +1751,7 @@ def build_kanas_history_subregion(
         reason = "NO_POINT_WITH_THREE_YEAR_SAME_GRID_QA"
     elif not same_grid_set:
         status = "INVALID"
-        reason = "KANAS_SUBREGION_GRID_SET_MISMATCH"
+        reason = f"{region_id.upper()}_SUBREGION_GRID_SET_MISMATCH"
     elif all_year_windows_ok and all_sampling_ok:
         status = "OK"
         reason = None
@@ -1722,7 +1783,30 @@ def build_kanas_history_subregion(
     }
 
 
-def equal_mean_subregion_window(items: list[dict], definition: dict) -> dict:
+def build_kanas_history_subregion(
+    config: dict,
+    subregion_id: str,
+    point_results: dict[str, dict],
+    forecast_date: dt.date,
+) -> dict:
+    return build_region_history_subregion(config, "kanas", subregion_id, point_results, forecast_date)
+
+
+def build_hemu_history_subregion(
+    config: dict,
+    subregion_id: str,
+    point_results: dict[str, dict],
+    forecast_date: dt.date,
+) -> dict:
+    return build_region_history_subregion(config, "hemu", subregion_id, point_results, forecast_date)
+
+
+def equal_mean_subregion_window(
+    items: list[dict],
+    definition: dict,
+    *,
+    region_id: str = "kanas",
+) -> dict:
     if not items:
         expected_dates = _window_expected_dates(definition)
         return {
@@ -1733,7 +1817,7 @@ def equal_mean_subregion_window(items: list[dict], definition: dict) -> dict:
             "days_available": 0,
             "missing_dates": expected_dates,
             "metrics": None,
-            "reason": "NO_USABLE_KANAS_SUBREGION",
+            "reason": f"NO_USABLE_{region_id.upper()}_SUBREGION",
         }
     metric_items = [
         item.get("metrics") or {
@@ -1754,7 +1838,7 @@ def equal_mean_subregion_window(items: list[dict], definition: dict) -> dict:
             "days_available": min((item.get("days_available", 0) for item in items), default=0),
             "missing_dates": sorted({date_value for item in items for date_value in item.get("missing_dates", [])}),
             "metrics": None,
-            "reason": "KANAS_COMPOSITE_SUBREGION_MISSING",
+            "reason": f"{region_id.upper()}_COMPOSITE_SUBREGION_MISSING",
             "available_subregions": len(metric_items),
             "expected_subregions": len(items),
         }
@@ -1813,12 +1897,18 @@ def equal_mean_subregion_window(items: list[dict], definition: dict) -> dict:
         "days_available": min(item.get("days_available", 0) for item in items),
         "missing_dates": sorted({date_value for item in items for date_value in item.get("missing_dates", [])}),
         "metrics": metrics,
-        "reason": None if aggregate_status == "OK" else "KANAS_COMPOSITE_SUBREGION_WINDOW_PARTIAL",
-        "aggregation": "equal_mean_of_sanwan_lake_guanyutai; no point-count weighting",
+        "reason": None if aggregate_status == "OK" else f"{region_id.upper()}_COMPOSITE_SUBREGION_WINDOW_PARTIAL",
+        "aggregation": f"equal_mean_of_{region_id}_subregions; no point-count weighting",
     }
 
 
-def build_kanas_history_composite(subregions: dict[str, dict], forecast_date: dt.date) -> dict:
+def build_region_history_composite(
+    subregions: dict[str, dict],
+    subregion_keys: tuple[str, ...],
+    forecast_date: dt.date,
+    *,
+    region_id: str,
+) -> dict:
     definitions_by_year = {
         str(year): history_forward_windows_for_year(forecast_date, year)
         for year in HISTORY_FORWARD_YEARS
@@ -1829,36 +1919,55 @@ def build_kanas_history_composite(subregions: dict[str, dict], forecast_date: dt
         for key, definition in definitions_by_year[str(year)].items():
             items = [
                 subregions[subregion_id].get("years", {}).get(str(year), {}).get(key, {})
-                for subregion_id in KANAS_SUBREGION_KEYS
+                for subregion_id in subregion_keys
                 if subregion_id in subregions
             ]
-            year_view[key] = equal_mean_subregion_window(items, definition)
+            year_view[key] = equal_mean_subregion_window(items, definition, region_id=region_id)
             if year_view[key]["status"] != "OK":
                 year_view["status"] = "PARTIAL"
         years[str(year)] = year_view
-    statuses = {subregions.get(key, {}).get("status", "INVALID") for key in KANAS_SUBREGION_KEYS}
+    statuses = {subregions.get(key, {}).get("status", "INVALID") for key in subregion_keys}
     if statuses == {"OK"} and all(item.get("status") == "OK" for item in years.values()):
         status = "OK"
         reason = None
     elif statuses & {"OK", "PARTIAL"}:
         status = "PARTIAL"
-        reason = "KANAS_COMPOSITE_REQUIRES_ALL_THREE_SUBREGIONS"
+        reason = f"{region_id.upper()}_COMPOSITE_REQUIRES_ALL_SUBREGIONS"
     else:
         status = "INVALID"
-        reason = "NO_USABLE_KANAS_SUBREGION"
+        reason = f"NO_USABLE_{region_id.upper()}_SUBREGION"
+    subregion_names = ", ".join(subregion_keys)
     return {
         "status": status,
         "usable_for_main_chain": status == "OK",
         "cross_year_comparison_usable": status == "OK",
-        "aggregation": "equal_mean_of_three_subregions; sanwan, lake, guanyutai each weight=1/3",
-        "subregion_statuses": {key: subregions.get(key, {}).get("status", "INVALID") for key in KANAS_SUBREGION_KEYS},
+        "aggregation": f"equal_mean_of_subregions; {subregion_names} each weight=1/{len(subregion_keys)}",
+        "subregion_statuses": {key: subregions.get(key, {}).get("status", "INVALID") for key in subregion_keys},
         "missing_or_partial_subregions": [
-            key for key in KANAS_SUBREGION_KEYS
+            key for key in subregion_keys
             if subregions.get(key, {}).get("status") != "OK"
         ],
         "years": years,
         "reason": reason,
     }
+
+
+def build_kanas_history_composite(subregions: dict[str, dict], forecast_date: dt.date) -> dict:
+    return build_region_history_composite(
+        subregions,
+        KANAS_SUBREGION_KEYS,
+        forecast_date,
+        region_id="kanas",
+    )
+
+
+def build_hemu_history_composite(subregions: dict[str, dict], forecast_date: dt.date) -> dict:
+    return build_region_history_composite(
+        subregions,
+        HEMU_SUBREGION_KEYS,
+        forecast_date,
+        region_id="hemu",
+    )
 
 
 def compact_history_forward_year(record: dict) -> dict:
@@ -1991,31 +2100,49 @@ def run_history_forward(
             "reason": None if core_result["status"] == "OK" else "HISTORY_FORWARD_NOT_USABLE",
         }
 
-    kanas_subregions = {
-        subregion_id: build_kanas_history_subregion(
-            config,
-            subregion_id,
-            point_results,
+    registered_subregions = {}
+    registered_composites = {}
+    for registered_region_id, subregion_keys in SUBREGION_KEYS_BY_REGION.items():
+        registry = region_subregion_registry(config, registered_region_id)
+        if not registry:
+            continue
+        subregions = {
+            subregion_id: build_region_history_subregion(
+                config,
+                registered_region_id,
+                subregion_id,
+                point_results,
+                forecast_date,
+            )
+            for subregion_id in subregion_keys
+            if subregion_id in registry
+        }
+        composite = build_region_history_composite(
+            subregions,
+            subregion_keys,
             forecast_date,
+            region_id=registered_region_id,
         )
-        for subregion_id in KANAS_SUBREGION_KEYS
-        if subregion_id in kanas_subregion_registry(config)
-    }
-    kanas_composite = build_kanas_history_composite(kanas_subregions, forecast_date)
-    if "kanas" in regions:
-        regions["kanas"]["subregions"] = kanas_subregions
-        regions["kanas"]["composite"] = kanas_composite
-        regions["kanas"]["subregion_aggregation_status"] = kanas_composite["status"]
-        regions["kanas"]["status"] = (
-            "FAILED"
-            if regions["kanas"]["status"] == "FAILED"
-            else "OK" if kanas_composite["status"] == "OK" else "PARTIAL"
-        )
-        regions["kanas"]["cross_year_comparison_usable"] = kanas_composite["cross_year_comparison_usable"]
-        regions["kanas"]["reason"] = None if regions["kanas"]["status"] == "OK" else kanas_composite.get("reason")
-        for subregion_id, item in kanas_subregions.items():
-            log(f"[kanas/{subregion_id}] HISTORY_FORWARD SUBREGION {item['status']}")
-        log(f"[kanas/composite] HISTORY_FORWARD {kanas_composite['status']}")
+        registered_subregions[registered_region_id] = subregions
+        registered_composites[registered_region_id] = composite
+        if registered_region_id in regions:
+            regions[registered_region_id]["subregions"] = subregions
+            regions[registered_region_id]["composite"] = composite
+            regions[registered_region_id]["subregion_aggregation_status"] = composite["status"]
+            regions[registered_region_id]["status"] = (
+                "FAILED"
+                if regions[registered_region_id]["status"] == "FAILED"
+                else "OK" if composite["status"] == "OK" else "PARTIAL"
+            )
+            regions[registered_region_id]["cross_year_comparison_usable"] = composite["cross_year_comparison_usable"]
+            regions[registered_region_id]["reason"] = (
+                None
+                if regions[registered_region_id]["status"] == "OK"
+                else composite.get("reason")
+            )
+        for subregion_id, item in subregions.items():
+            log(f"[{registered_region_id}/{subregion_id}] HISTORY_FORWARD SUBREGION {item['status']}")
+        log(f"[{registered_region_id}/composite] HISTORY_FORWARD {composite['status']}")
 
     enabled_regions = [item for item in regions.values() if item.get("usable_for_main_chain")]
     if not enabled_regions or any(item.get("status") == "FAILED" for item in enabled_regions):
@@ -2026,8 +2153,20 @@ def run_history_forward(
         module_status_value = "OK"
     partial_points = sum(
         item.get("status") != "OK"
-        for item in kanas_subregions.values()
-    ) + (1 if kanas_composite.get("status") == "PARTIAL" else 0)
+        for subregions in registered_subregions.values()
+        for item in subregions.values()
+    ) + sum(
+        composite.get("status") == "PARTIAL"
+        for composite in registered_composites.values()
+    )
+    aggregation_metadata = {
+        region_id: {
+            "subregions": list(subregions),
+            "composite_status": registered_composites[region_id].get("status"),
+            "deduplication": "returned_grid_coordinate; one independent sample per grid",
+        }
+        for region_id, subregions in registered_subregions.items()
+    }
     return module_header(
         "history_forward",
         generated_at,
@@ -2049,11 +2188,9 @@ def run_history_forward(
         failed_fetches=sum(record.get("status") != "PASS" for record in all_records),
         expected_fetches=len(expected_point_ids) * len(HISTORY_FORWARD_YEARS),
         partial_points=partial_points,
-        kanas_aggregation={
-            "subregions": list(kanas_subregions),
-            "composite_status": kanas_composite.get("status"),
-            "deduplication": "returned_grid_coordinate; one independent sample per grid",
-        },
+        kanas_aggregation=aggregation_metadata.get("kanas", {}),
+        hemu_aggregation=aggregation_metadata.get("hemu", {}),
+        subregion_aggregations=aggregation_metadata,
     )
 
 
@@ -4347,17 +4484,18 @@ def point_year_lightweight_views(
     return years, sampling
 
 
-def build_kanas_forecast_subregion(
+def build_region_forecast_subregion(
     config: dict,
+    region_id: str,
     subregion_id: str,
     hres: dict,
     forecast_date: dt.date,
 ) -> dict:
-    registry_item = kanas_subregion_registry(config).get(subregion_id) or {}
-    point_ids = kanas_subregion_point_ids(config, subregion_id)
+    registry_item = region_subregion_registry(config, region_id).get(subregion_id) or {}
+    point_ids = region_subregion_point_ids(config, region_id, subregion_id)
     records = {
         point_id: (hres.get("points") or {}).get(point_id)
-        for point_id in kanas_subregion_point_ids(config, subregion_id, verified_only=True)
+        for point_id in region_subregion_point_ids(config, region_id, subregion_id, verified_only=True)
         if (hres.get("points") or {}).get(point_id)
     }
     minimum_grids = registry_item.get("minimum_verified_unique_grids", 1)
@@ -4401,10 +4539,31 @@ def build_kanas_forecast_subregion(
     }
 
 
-def combine_kanas_light_years(
+def build_kanas_forecast_subregion(
+    config: dict,
+    subregion_id: str,
+    hres: dict,
+    forecast_date: dt.date,
+) -> dict:
+    return build_region_forecast_subregion(config, "kanas", subregion_id, hres, forecast_date)
+
+
+def build_hemu_forecast_subregion(
+    config: dict,
+    subregion_id: str,
+    hres: dict,
+    forecast_date: dt.date,
+) -> dict:
+    return build_region_forecast_subregion(config, "hemu", subregion_id, hres, forecast_date)
+
+
+def combine_region_light_years(
     subregions: dict[str, dict],
     history_composite: dict | None,
     forecast_date: dt.date,
+    subregion_keys: tuple[str, ...],
+    *,
+    region_id: str,
 ) -> dict:
     years = {}
     for year in HISTORY_FORWARD_YEARS:
@@ -4423,14 +4582,14 @@ def combine_kanas_light_years(
     forecast_year = {"status": "OK"}
     for key, definition in definitions_2026.items():
         items = []
-        for subregion_id in KANAS_SUBREGION_KEYS:
+        for subregion_id in subregion_keys:
             item = subregions.get(subregion_id) or {}
             window = (item.get("years", {}).get("2026", {}) or {}).get(key)
             if not window or window.get("status") not in {"OK", "PARTIAL"}:
                 items.append({"status": "PARTIAL", "metrics": None})
             else:
                 items.append(window)
-        forecast_year[key] = equal_mean_subregion_window(items, definition)
+        forecast_year[key] = equal_mean_subregion_window(items, definition, region_id=region_id)
         if forecast_year[key].get("status") != "OK":
             forecast_year["status"] = "PARTIAL"
     years["2026"] = {
@@ -4438,6 +4597,34 @@ def combine_kanas_light_years(
         for key in definitions_2026
     }
     return years
+
+
+def combine_kanas_light_years(
+    subregions: dict[str, dict],
+    history_composite: dict | None,
+    forecast_date: dt.date,
+) -> dict:
+    return combine_region_light_years(
+        subregions,
+        history_composite,
+        forecast_date,
+        KANAS_SUBREGION_KEYS,
+        region_id="kanas",
+    )
+
+
+def combine_hemu_light_years(
+    subregions: dict[str, dict],
+    history_composite: dict | None,
+    forecast_date: dt.date,
+) -> dict:
+    return combine_region_light_years(
+        subregions,
+        history_composite,
+        forecast_date,
+        HEMU_SUBREGION_KEYS,
+        region_id="hemu",
+    )
 
 
 def build_grid_registry(config: dict, hres: dict, history_forward: dict, generated_at: str, data_date: str) -> dict:
@@ -4458,32 +4645,41 @@ def build_grid_registry(config: dict, hres: dict, history_forward: dict, generat
             },
             "same_grid_qa": copy.deepcopy(result.get("same_grid_qa")),
         }
-    subregions = {}
-    for subregion_id in KANAS_SUBREGION_KEYS:
-        point_ids = kanas_subregion_point_ids(config, subregion_id)
-        subregions[subregion_id] = {
-            "point_ids": point_ids,
-            "verified_point_ids": kanas_subregion_point_ids(config, subregion_id, verified_only=True),
-            "hres_unique_grid_ids": [
-                entry["grid_cell_id"]
-                for entry in deduplicate_grid_records(
-                    [hres_points[point_id] for point_id in point_ids if point_id in hres_points]
-                )
-            ],
-            "history_unique_grid_ids_by_year": {
-                year: [
+    subregions_by_region = {}
+    for region_id, subregion_keys in SUBREGION_KEYS_BY_REGION.items():
+        subregions = {}
+        for subregion_id in subregion_keys:
+            point_ids = region_subregion_point_ids(config, region_id, subregion_id)
+            subregions[subregion_id] = {
+                "point_ids": point_ids,
+                "verified_point_ids": region_subregion_point_ids(
+                    config,
+                    region_id,
+                    subregion_id,
+                    verified_only=True,
+                ),
+                "hres_unique_grid_ids": [
                     entry["grid_cell_id"]
                     for entry in deduplicate_grid_records(
-                        [
-                            (forward_points.get(point_id, {}).get("years") or {}).get(year)
-                            for point_id in point_ids
-                            if (forward_points.get(point_id, {}).get("years") or {}).get(year)
-                        ]
+                        [hres_points[point_id] for point_id in point_ids if point_id in hres_points]
                     )
-                ]
-                for year in (str(value) for value in HISTORY_FORWARD_YEARS)
-            },
-        }
+                ],
+                "history_unique_grid_ids_by_year": {
+                    year: [
+                        entry["grid_cell_id"]
+                        for entry in deduplicate_grid_records(
+                            [
+                                (forward_points.get(point_id, {}).get("years") or {}).get(year)
+                                for point_id in point_ids
+                                if (forward_points.get(point_id, {}).get("years") or {}).get(year)
+                            ]
+                        )
+                    ]
+                    for year in (str(value) for value in HISTORY_FORWARD_YEARS)
+                },
+            }
+        if subregions:
+            subregions_by_region[region_id] = subregions
     return {
         "schema_version": SCHEMA_VERSION,
         "module": "grid_registry",
@@ -4493,8 +4689,131 @@ def build_grid_registry(config: dict, hres: dict, history_forward: dict, generat
         "deduplication_key": "returned_grid_coordinate",
         "hres": {"points": hres_mappings},
         "history_forward": {"points": history_mappings},
-        "kanas_subregions": subregions,
+        "kanas_subregions": subregions_by_region.get("kanas", {}),
+        "hemu_subregions": subregions_by_region.get("hemu", {}),
+        "subregions_by_region": subregions_by_region,
         "interpretation_boundary": "Mapping and QA metadata only; no weather series or downstream ecological conclusion.",
+    }
+
+
+def build_registered_light_region(
+    config: dict,
+    region_id: str,
+    subregion_keys: tuple[str, ...],
+    generated_at: str,
+    data_date: str,
+    forecast_date: dt.date,
+    hres: dict,
+    history_forward: dict,
+) -> dict:
+    region_config = config.get("regions", {}).get(region_id, {})
+    history_region = (history_forward.get("regions") or {}).get(region_id) or {}
+    subregion_views = {}
+    for subregion_id in subregion_keys:
+        history_subregion = (history_region.get("subregions") or {}).get(subregion_id)
+        forecast_subregion = build_region_forecast_subregion(
+            config,
+            region_id,
+            subregion_id,
+            hres,
+            forecast_date,
+        )
+        if history_subregion:
+            history_years = {
+                str(year): {
+                    key: flattened_lightweight_window(
+                        (history_subregion.get("years") or {}).get(str(year), {}).get(key)
+                    )
+                    for key in HISTORY_FORWARD_WINDOW_KEYS
+                }
+                for year in HISTORY_FORWARD_YEARS
+            }
+        else:
+            history_years = {
+                str(year): unavailable_lightweight_windows(
+                    forecast_date,
+                    "HISTORY_FORWARD_SUBREGION_UNAVAILABLE",
+                )
+                for year in HISTORY_FORWARD_YEARS
+            }
+        forecast_year = {
+            key: flattened_lightweight_window(
+                (forecast_subregion.get("years") or {}).get("2026", {}).get(key)
+            )
+            for key in HISTORY_FORWARD_WINDOW_KEYS
+        }
+        forecast_status = forecast_subregion.get("status")
+        history_status = (history_subregion or {}).get("status")
+        if forecast_status == "OK" and history_status == "OK":
+            subregion_status = "OK"
+        elif forecast_subregion.get("usable_for_main_chain") or (history_subregion or {}).get("usable_for_main_chain"):
+            subregion_status = "PARTIAL"
+        else:
+            subregion_status = "INVALID"
+        sampling_status = "OK" if subregion_status == "OK" else subregion_status
+        subregion_views[subregion_id] = {
+            "name": forecast_subregion.get("name") or (history_subregion or {}).get("name"),
+            "status": subregion_status,
+            "sampling": {
+                "status": sampling_status,
+                "forecast_2026": forecast_subregion.get("sampling"),
+                "historical_2023_2025": (
+                    light_sampling_from_history_subregion(history_subregion)
+                    if history_subregion
+                    else {"status": "INVALID", "reason": "HISTORY_FORWARD_SUBREGION_UNAVAILABLE"}
+                ),
+            },
+            "years": {**history_years, "2026": forecast_year},
+            "reason": (
+                forecast_subregion.get("reason")
+                if forecast_status != "OK"
+                else (history_subregion or {}).get("reason")
+            ),
+        }
+    history_composite = history_region.get("composite")
+    composite_years = combine_region_light_years(
+        subregion_views,
+        history_composite,
+        forecast_date,
+        subregion_keys,
+        region_id=region_id,
+    )
+    statuses = [item.get("status") for item in subregion_views.values()]
+    if statuses and all(status == "OK" for status in statuses):
+        composite_status = "OK"
+    elif any(status in {"OK", "PARTIAL"} for status in statuses):
+        composite_status = "PARTIAL"
+    else:
+        composite_status = "INVALID"
+    return {
+        "name": region_config.get("name", region_id),
+        "usable_for_main_chain": composite_status == "OK",
+        "status": composite_status,
+        "subregions": subregion_views,
+        "composite": {
+            "status": composite_status,
+            "aggregation": (
+                f"equal_mean_of_{region_id}_subregions; "
+                f"{', '.join(subregion_keys)} each weight=1/{len(subregion_keys)}; "
+                "no point-count weighting"
+            ),
+            "sampling": {
+                "status": composite_status,
+                "subregions": {
+                    key: copy.deepcopy(value.get("sampling"))
+                    for key, value in subregion_views.items()
+                },
+            },
+            "years": composite_years,
+            "missing_or_partial_subregions": [
+                key for key, item in subregion_views.items() if item.get("status") != "OK"
+            ],
+            "reason": (
+                None
+                if composite_status == "OK"
+                else f"{region_id.upper()}_COMPOSITE_REQUIRES_ALL_SUBREGIONS"
+            ),
+        },
     }
 
 
@@ -4510,70 +4829,17 @@ def build_phenology_weather_summary(
     regions = {}
     for region_id in CORE_REGION_IDS:
         region_config = config.get("regions", {}).get(region_id, {})
-        if region_id == "kanas":
-            history_region = (history_forward.get("regions") or {}).get("kanas") or {}
-            subregion_views = {}
-            for subregion_id in KANAS_SUBREGION_KEYS:
-                history_subregion = (history_region.get("subregions") or {}).get(subregion_id)
-                forecast_subregion = build_kanas_forecast_subregion(config, subregion_id, hres, forecast_date)
-                history_years = {}
-                if history_subregion:
-                    for year in HISTORY_FORWARD_YEARS:
-                        history_years[str(year)] = {
-                            key: flattened_lightweight_window(
-                                (history_subregion.get("years") or {}).get(str(year), {}).get(key)
-                            )
-                            for key in HISTORY_FORWARD_WINDOW_KEYS
-                        }
-                else:
-                    history_years = {
-                        str(year): unavailable_lightweight_windows(forecast_date, "HISTORY_FORWARD_SUBREGION_UNAVAILABLE")
-                        for year in HISTORY_FORWARD_YEARS
-                    }
-                forecast_year = {
-                    key: flattened_lightweight_window(
-                        (forecast_subregion.get("years") or {}).get("2026", {}).get(key)
-                    )
-                    for key in HISTORY_FORWARD_WINDOW_KEYS
-                }
-                subregion_views[subregion_id] = {
-                    "name": forecast_subregion.get("name") or (history_subregion or {}).get("name"),
-                    "status": "OK" if forecast_subregion.get("status") == "OK" and (history_subregion or {}).get("status") == "OK" else "PARTIAL" if forecast_subregion.get("usable_for_main_chain") or (history_subregion or {}).get("usable_for_main_chain") else "INVALID",
-                    "sampling": {
-                        "status": "OK" if forecast_subregion.get("status") == "OK" and (history_subregion or {}).get("status") == "OK" else "PARTIAL" if forecast_subregion.get("usable_for_main_chain") or (history_subregion or {}).get("usable_for_main_chain") else "INVALID",
-                        "forecast_2026": forecast_subregion.get("sampling"),
-                        "historical_2023_2025": light_sampling_from_history_subregion(history_subregion) if history_subregion else {"status": "INVALID", "reason": "HISTORY_FORWARD_SUBREGION_UNAVAILABLE"},
-                    },
-                    "years": {**history_years, "2026": forecast_year},
-                    "reason": forecast_subregion.get("reason") if forecast_subregion.get("status") != "OK" else (history_subregion or {}).get("reason"),
-                }
-            history_composite = history_region.get("composite")
-            composite_years = combine_kanas_light_years(subregion_views, history_composite, forecast_date)
-            composite_status = "OK" if all(
-                item.get("status") == "OK" for item in subregion_views.values()
-            ) else "PARTIAL" if any(item.get("status") == "PARTIAL" for item in subregion_views.values()) else "INVALID"
-            regions[region_id] = {
-                "name": region_config.get("name"),
-                "usable_for_main_chain": composite_status == "OK",
-                "status": composite_status,
-                "subregions": subregion_views,
-                "composite": {
-                    "status": composite_status,
-                    "aggregation": "equal_mean_of_sanwan_lake_guanyutai; no point-count weighting",
-                    "sampling": {
-                        "status": composite_status,
-                        "subregions": {
-                            key: copy.deepcopy(value.get("sampling"))
-                            for key, value in subregion_views.items()
-                        },
-                    },
-                    "years": composite_years,
-                    "missing_or_partial_subregions": [
-                        key for key, item in subregion_views.items() if item.get("status") != "OK"
-                    ],
-                    "reason": None if composite_status == "OK" else "KANAS_COMPOSITE_REQUIRES_ALL_SUBREGIONS",
-                },
-            }
+        if region_id in SUBREGION_KEYS_BY_REGION and region_subregion_registry(config, region_id):
+            regions[region_id] = build_registered_light_region(
+                config,
+                region_id,
+                SUBREGION_KEYS_BY_REGION[region_id],
+                generated_at,
+                data_date,
+                forecast_date,
+                hres,
+                history_forward,
+            )
             continue
         core_id = region_config.get("core_point_id")
         point = active_points(config).get(core_id) if core_id else None
@@ -4594,12 +4860,6 @@ def build_phenology_weather_summary(
             "sampling": sampling,
             "years": years,
         }
-    regions["hemu"] = {
-        "name": config.get("regions", {}).get("hemu", {}).get("name", "禾木"),
-        "usable_for_main_chain": False,
-        "status": "UNAVAILABLE",
-        "reason": "NO_VERIFIED_CORE_POINT",
-    }
     return {
         "schema_version": SCHEMA_VERSION,
         "module": "phenology_weather_summary",
@@ -4615,6 +4875,7 @@ def build_phenology_weather_summary(
             "elevation": "nan",
             "grid_deduplication": "returned_grid_coordinate; one independent sample per returned model grid",
             "kanas_aggregation": "unique grids equal within each subregion, then three subregions equal in composite",
+            "hemu_aggregation": "unique grids equal within valley/backhill, then valley and backhill equal in composite",
         },
         "window_definitions": history_forward_windows_for_year(forecast_date, 2026),
         "weather_only": True,
