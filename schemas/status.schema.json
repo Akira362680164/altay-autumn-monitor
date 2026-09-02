@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/schemas/status.schema.json",
+  "title": "Altay Autumn Monitor pipeline status",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "data_date", "pipeline_status", "modules", "points"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "data_date": {"type": ["string", "null"]},
+    "pipeline_status": {"type": "string", "enum": ["OK", "DEGRADED", "FAILED"]},
+    "modules": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "enum": ["OK", "FAILED", "SKIPPED"]}
+    },
+    "module_details": {"type": "object"},
+    "points": {"type": "object"},
+    "route_slots": {"type": "object"},
+    "manual_phenology_baseline": {"type": ["object", "null"]},
+    "failure_policy": {"type": "string"}
+  },
+  "additionalProperties": true
+}

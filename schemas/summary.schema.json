@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/schemas/summary.schema.json",
+  "title": "Altay Autumn Monitor ChatGPT summary",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "data_date",
+    "forecast_date",
+    "completed_history_date",
+    "visit_dates",
+    "regions",
+    "interpretation_boundary"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "data_date": {"type": "string", "format": "date"},
+    "forecast_date": {"type": "string", "format": "date"},
+    "completed_history_date": {"type": "string", "format": "date"},
+    "visit_dates": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "format": "date"}}},
+    "regions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "visit_date",
+          "usable_for_main_chain",
+          "weather_driver_vs_2025",
+          "forecast_0_7d",
+          "forecast_8_15d",
+          "ensemble",
+          "gfs_crosscheck",
+          "leaf_loss_weather_risk",
+          "qa"
+        ],
+        "properties": {
+          "visit_date": {"type": "string", "format": "date"},
+          "usable_for_main_chain": {"type": "boolean"},
+          "core_point_id": {"type": ["string", "null"]},
+          "weather_driver_vs_2025": {
+            "type": "object",
+            "required": ["direction", "strength", "evidence"],
+            "properties": {
+              "direction": {"type": "string", "enum": ["LEADING", "SYNC", "LAGGING", "UNDETERMINED"]},
+              "strength": {"type": "string", "enum": ["WEAK", "MODERATE", "STRONG"]},
+              "evidence": {"type": "object"}
+            },
+            "additionalProperties": true
+          },
+          "forecast_0_7d": {"type": "object"},
+          "forecast_8_15d": {"type": "object"},
+          "ensemble": {"type": "object"},
+          "gfs_crosscheck": {"type": "object"},
+          "leaf_loss_weather_risk": {"type": "object"},
+          "qa": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "manual_phenology_baseline": {"type": ["object", "null"]},
+    "interpretation_boundary": {"type": "string"}
+  },
+  "additionalProperties": true
+}

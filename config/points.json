@@ -1,0 +1,148 @@
+{
+  "schema_version": "1.0.0",
+  "timezone": "Asia/Shanghai",
+  "sampling": {
+    "enabled_region_status": "VERIFIED",
+    "radius_km": 12,
+    "grid_qa_extra_allowance_km": 4.5,
+    "directions": ["N", "S", "E", "W", "NE", "NW", "SE", "SW"],
+    "model_grid_deduplication": true,
+    "notes": "Core plus eight 12 km same-source samples. Returned model grid cells, not requested points, define uniqueness."
+  },
+  "regions": {
+    "baihaba": {
+      "name": "白哈巴",
+      "core_point_id": "B1",
+      "primary_visit_date": "2026-10-01",
+      "visit_dates": ["2026-10-01", "2026-10-03"]
+    },
+    "kanas": {
+      "name": "喀纳斯",
+      "core_point_id": "K1",
+      "primary_visit_date": "2026-10-02",
+      "visit_dates": ["2026-10-02", "2026-10-03"]
+    },
+    "hemu": {
+      "name": "禾木",
+      "core_point_id": null,
+      "primary_visit_date": "2026-10-04",
+      "visit_dates": ["2026-10-04", "2026-10-05"]
+    },
+    "keketuohai": {
+      "name": "可可托海",
+      "core_point_id": "C1",
+      "primary_visit_date": "2026-10-06",
+      "visit_dates": ["2026-10-05", "2026-10-06"]
+    }
+  },
+  "points": {
+    "K1": {
+      "name": "喀纳斯神仙湾",
+      "region": "kanas",
+      "status": "VERIFIED",
+      "role": "core",
+      "latitude": 48.65688,
+      "longitude": 87.03412
+    },
+    "K2": {
+      "name": "喀纳斯月亮湾",
+      "region": "kanas",
+      "status": "VERIFIED",
+      "role": "supporting",
+      "latitude": 48.62947,
+      "longitude": 87.04162
+    },
+    "K3": {
+      "name": "喀纳斯卧龙湾",
+      "region": "kanas",
+      "status": "VERIFIED",
+      "role": "supporting",
+      "latitude": 48.61991,
+      "longitude": 87.04873
+    },
+    "B1": {
+      "name": "白哈巴村核心",
+      "region": "baihaba",
+      "status": "VERIFIED",
+      "role": "core",
+      "latitude": 48.69583,
+      "longitude": 86.78382
+    },
+    "C1": {
+      "name": "可可托海镇/额尔齐斯河谷",
+      "region": "keketuohai",
+      "status": "VERIFIED",
+      "role": "core",
+      "latitude": 47.22061,
+      "longitude": 89.80911
+    },
+    "K4": {
+      "name": "喀纳斯老村",
+      "region": "kanas",
+      "status": "PROVISIONAL",
+      "role": "supporting",
+      "latitude": 48.69931,
+      "longitude": 87.03475,
+      "reason": "保留坐标槽位，尚未进入正式主链"
+    },
+    "H1": {
+      "name": "禾木村/河谷",
+      "region": "hemu",
+      "status": "PROVISIONAL",
+      "role": "core_candidate",
+      "latitude": 48.56944,
+      "longitude": 87.43444,
+      "reason": "待地图平台和实际路线交叉核验"
+    },
+    "H2": {
+      "name": "禾木观景点/后山白桦坡",
+      "region": "hemu",
+      "status": "PROVISIONAL",
+      "role": "supporting_candidate",
+      "latitude": 48.57648,
+      "longitude": 87.4265,
+      "reason": "待地图平台和实际路线交叉核验"
+    },
+    "B2": {
+      "name": "白哈巴村东坡",
+      "region": "baihaba",
+      "status": "PROVISIONAL",
+      "role": "supporting_candidate",
+      "latitude": 48.695,
+      "longitude": 86.794,
+      "reason": "保留候选，不进入主链"
+    },
+    "C2": {
+      "name": "神钟山/额尔齐斯河峡谷",
+      "region": "keketuohai",
+      "status": "PROVISIONAL",
+      "role": "supporting_candidate",
+      "latitude": 47.29918,
+      "longitude": 89.97,
+      "reason": "保留候选，不进入主链"
+    }
+  },
+  "route_slots": {
+    "AHE_ROAD_G681": {
+      "name": "阿禾公路 / G681",
+      "status": "ROUTE_NOT_VERIFIED",
+      "enabled": false,
+      "coordinates": null,
+      "reason": "等待用户实际路线、车辆准入和当日放行确认"
+    },
+    "G331": {
+      "name": "G331 连接段",
+      "status": "ROUTE_NOT_VERIFIED",
+      "enabled": false,
+      "coordinates": null,
+      "reason": "等待用户实际路线和当日道路状态确认"
+    }
+  },
+  "manual_phenology_baseline": {
+    "date": "2026-09-01",
+    "region": "hemu",
+    "source": "user_provided_photo",
+    "observations": ["整体全绿", "尚未进入明显黄叶期"],
+    "participates_in_automatic_weather_calculation": false
+  }
+}
