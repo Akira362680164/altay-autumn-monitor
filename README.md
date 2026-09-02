@@ -29,7 +29,7 @@
 
 ## 职责边界
 
-Codex 负责 GitHub Repository、GitHub Actions、Open-Meteo 请求、原始数据留存、QA、2026 与 2025 同点天气指标、稳定 JSON Schema、历史归档和机器可读输出。
+Codex 负责 GitHub Repository、GitHub Actions、Open-Meteo 请求、原始数据留存、QA、2026 与配置历史参考年的同点天气指标、稳定 JSON Schema、历史归档和机器可读输出。
 
 ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实拍，结合天气驱动力判断实际物候日差、用户到访日黄度和挂叶风险，并输出每日简报。JSON 中的 `weather_driver_vs_2025` 只代表天气驱动力，不是实际物候结论。
 
@@ -93,11 +93,11 @@ Open-Meteo 实际返回中，HRES 和 Single Runs 可能在数组边缘出现 `n
 
 ## 历史差分和指标边界
 
-2025、2026 均从 8 月 25 日累计到最近已完成的本地日期，使用同一固定请求坐标、同一 `ecmwf_ifs` 和同一时区。它只能称为 `ECMWF IFS historical weather / analysis`，不是 `station observation`，因为它不是气象站实测。
+阿勒泰主 namespace 的 2023、2024、2025、2026 均从 8 月 25 日累计到最近已完成的本地日期，使用同一固定请求坐标、同一 `ecmwf_ifs` 和同一时区。年份由 `config/points.json` 的 `history_years` 控制；额济纳独立 namespace 当前仍按自身配置使用 2025、2026。它只能称为 `ECMWF IFS historical weather / analysis`，不是 `station observation`，因为它不是气象站实测。
 
 每个地点计算：日最低/最高/平均温度、夜最低温、`<15℃`/`<10℃`/`<5℃`/`<2℃`/`<0℃` 寒夜累计、各阈值连续寒夜序列及最大连续长度、昼夜温差、降水、降雪、云量、低云、日照/短波、平均风和最大阵风。
 
-额济纳 namespace 额外从 `09-01` 开始，并增加 `<15℃` 夜间累计；其 `history_comparison.json` 保留同点同模式格点 QA 与 `delta_2026_minus_2025`。阿勒泰主 namespace 仍使用原来的 `08-25` 起点和字段语义。
+额济纳 namespace 额外从 `09-01` 开始，并增加 `<15℃` 夜间累计；其 `history_comparison.json` 保留同点同模式格点 QA 与 `delta_2026_minus_2025`。阿勒泰主 namespace 仍使用原来的 `08-25` 起点和字段语义，并在保留 `delta_2026_minus_2025` 的同时增加 `delta_2026_minus_2023`、`delta_2026_minus_2024` 和通用 `deltas_2026_minus`。每个年份的 `daily` 与 `metrics` 都完整保留；所有配置历史年份返回格点必须一致，否则该点比较为 `FAILED`，不生成混格点差分。主日报继续使用 `weather_driver_vs_2025`，并可读取新增的 `weather_driver_vs_2023`、`weather_driver_vs_2024`。
 
 `coldness_index` 是本项目的内部相对比较指标，不是官方物候模型，公式为每个完整日累加：
 

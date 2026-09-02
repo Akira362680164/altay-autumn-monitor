@@ -165,20 +165,111 @@ class PipelineUnitTests(unittest.TestCase):
 
     def test_history_year_matching_and_weather_only_boundary(self):
         config = pipeline.load_config()
+        requested_coordinate = {"latitude": 48.69583, "longitude": 86.78382}
+        returned_grid = {"latitude": 48.75, "longitude": 86.75}
         point_results = {
             "B1": {
                 "point": {"region": "baihaba"},
                 "years": {
-                    "2025": {"status": "PASS", "daily": [self.make_day("2025-08-25", 8)] * 3},
-                    "2026": {"status": "PASS", "daily": [self.make_day("2026-08-25", 3)] * 3},
+                    str(year): {
+                        "status": "PASS",
+                        "daily": [self.make_day(f"{year}-08-25", 8 if year < 2026 else 3)] * 3,
+                        "request": {"coordinate": requested_coordinate},
+                        "response": {"grid_coordinate": returned_grid},
+                    }
+                    for year in (2023, 2024, 2025, 2026)
                 },
             }
         }
         comparison = pipeline.build_history_comparison(config, point_results, "2026-08-27")
+        self.assertEqual(set(comparison["points"]["B1"]["metrics"]), {"2023", "2024", "2025", "2026"})
         self.assertEqual(comparison["points"]["B1"]["metrics"]["2025"]["period_start"], "2025-08-25")
         self.assertEqual(comparison["points"]["B1"]["metrics"]["2026"]["period_start"], "2026-08-25")
+        self.assertEqual(comparison["points"]["B1"]["same_grid_qa"]["checked_years"], ["2023", "2024", "2025", "2026"])
+        self.assertEqual(comparison["points"]["B1"]["same_grid_qa"]["final_status"], "PASS")
+        self.assertIn("delta_2026_minus_2023", comparison["points"]["B1"])
+        self.assertIn("delta_2026_minus_2024", comparison["points"]["B1"])
+        self.assertIn("weather_driver_vs_2023", comparison["points"]["B1"])
+        self.assertIn("weather_driver_vs_2024", comparison["points"]["B1"])
         self.assertEqual(comparison["regions"]["baihaba"]["status"], "OK")
         self.assertNotIn("actual_phenology_lead_days", comparison["points"]["B1"])
+
+    def test_history_grid_mismatch_fails_all_year_comparison(self):
+        config = pipeline.load_config()
+        point_results = {
+            "B1": {
+                "point": {"region": "baihaba"},
+                "years": {
+                    str(year): {
+                        "status": "PASS",
+                        "daily": [self.make_day(f"{year}-08-25", 4)] * 3,
+                        "request": {"coordinate": {"latitude": 48.69583, "longitude": 86.78382}},
+                        "response": {
+                            "grid_coordinate": {"latitude": 48.75, "longitude": 86.75}
+                            if year != 2024
+                            else {"latitude": 48.80, "longitude": 86.75}
+                        },
+                    }
+                    for year in (2023, 2024, 2025, 2026)
+                },
+            }
+        }
+        comparison = pipeline.build_history_comparison(config, point_results, "2026-08-27")
+        point = comparison["points"]["B1"]
+        self.assertEqual(point["status"], "FAILED")
+        self.assertEqual(point["same_grid_qa"]["status"], "FAIL")
+        self.assertEqual(point["same_grid_qa"]["final_status"], "FAILED")
+        self.assertEqual(point["same_grid_qa"]["reason"], "HISTORICAL_GRID_MISMATCH")
+        self.assertEqual(point["delta_2026_minus_2023"], {})
+
+    def test_history_year_configuration_is_namespace_specific(self):
+        self.assertEqual(pipeline.history_years_for_config(pipeline.load_config()), (2023, 2024, 2025, 2026))
+        self.assertEqual(pipeline.history_years_for_config(pipeline.load_ejina_config()), (2025, 2026))
+
+    def test_run_history_requests_all_configured_years(self):
+        config = pipeline.load_config()
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"])
+            point = kwargs["point"]
+            day = kwargs["params"]["start_date"]
+            hourly = {
+                "time": [f"{day}T{hour:02d}:00" for hour in range(24)],
+                "temperature_2m": [5] * 24,
+                "precipitation": [0] * 24,
+                "snowfall": [0] * 24,
+                "cloud_cover": [20] * 24,
+                "cloud_cover_low": [5] * 24,
+                "wind_speed_10m": [4] * 24,
+                "wind_gusts_10m": [20] * 24,
+            }
+            return {
+                "point_id": point["id"],
+                "point": point,
+                "status": "PASS",
+                "hourly": hourly,
+                "request": {"coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]}},
+                "response": {"grid_coordinate": {"latitude": 48.75, "longitude": 86.75}},
+                "solar_variable": None,
+            }
+
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            history = pipeline.run_history(
+                config,
+                object(),
+                "2026-08-28T00:00:00Z",
+                "2026-08-27",
+                date(2026, 8, 27),
+            )
+
+        self.assertEqual(history["history_years"], [2023, 2024, 2025, 2026])
+        self.assertEqual(len(requests), len(pipeline.active_points(config)) * 4)
+        self.assertEqual(sorted({item["start_date"][:4] for item in requests}), ["2023", "2024", "2025", "2026"])
+        self.assertTrue(all(item["models"] == "ecmwf_ifs" for item in requests))
+        self.assertTrue(all(item["cell_selection"] == "nearest" for item in requests))
+        self.assertTrue(all(item["elevation"] == "nan" for item in requests))
+        self.assertTrue(all(item["timezone"] == "Asia/Shanghai" for item in requests))
 
     def test_failed_module_is_explicit_in_status(self):
         config = pipeline.load_config()
@@ -194,8 +285,11 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], pipeline.SCHEMA_VERSION)
         required = set(schema["required"])
         self.assertTrue({"data_date", "regions", "interpretation_boundary"}.issubset(required))
+        self.assertIn("history_years", schema["properties"])
         region_required = set(schema["properties"]["regions"]["additionalProperties"]["required"])
         self.assertIn("weather_driver_vs_2025", region_required)
+        self.assertIn("weather_driver_vs_2023", schema["properties"]["regions"]["additionalProperties"]["properties"])
+        self.assertIn("weather_driver_vs_2024", schema["properties"]["regions"]["additionalProperties"]["properties"])
 
     def test_zero_values_are_not_treated_as_missing_in_risk_checks(self):
         wet_snow_day = self.make_day("2026-09-01", 0)

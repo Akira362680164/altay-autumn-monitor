@@ -19,6 +19,7 @@
     "data_date": {"type": "string", "format": "date"},
     "forecast_date": {"type": "string", "format": "date"},
     "completed_history_date": {"type": "string", "format": "date"},
+    "history_years": {"type": "array", "items": {"type": "integer"}},
     "visit_dates": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string", "format": "date"}}},
     "regions": {
       "type": "object",
@@ -41,6 +42,26 @@
           "usable_for_main_chain": {"type": "boolean"},
           "core_point_id": {"type": ["string", "null"]},
           "weather_driver_vs_2025": {
+            "type": "object",
+            "required": ["direction", "strength", "evidence"],
+            "properties": {
+              "direction": {"type": "string", "enum": ["LEADING", "SYNC", "LAGGING", "UNDETERMINED"]},
+              "strength": {"type": "string", "enum": ["WEAK", "MODERATE", "STRONG"]},
+              "evidence": {"type": "object"}
+            },
+            "additionalProperties": true
+          },
+          "weather_driver_vs_2023": {
+            "type": "object",
+            "required": ["direction", "strength", "evidence"],
+            "properties": {
+              "direction": {"type": "string", "enum": ["LEADING", "SYNC", "LAGGING", "UNDETERMINED"]},
+              "strength": {"type": "string", "enum": ["WEAK", "MODERATE", "STRONG"]},
+              "evidence": {"type": "object"}
+            },
+            "additionalProperties": true
+          },
+          "weather_driver_vs_2024": {
             "type": "object",
             "required": ["direction", "strength", "evidence"],
             "properties": {

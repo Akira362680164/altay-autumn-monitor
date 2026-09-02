@@ -79,6 +79,7 @@ LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
 LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
 CORE_REGION_IDS = ("baihaba", "kanas", "keketuohai")
 THRESHOLDS_C = (15.0, 10.0, 5.0, 2.0, 0.0)
+DEFAULT_HISTORY_YEARS = (2025, 2026)
 
 PRECISION_POLICIES = {
     "hres": [
@@ -178,6 +179,22 @@ def load_ejina_config() -> dict:
     if config.get("namespace") != "ejina":
         raise ValueError("Ejina config namespace must be ejina")
     return config
+
+
+def history_years_for_config(config: dict) -> tuple[int, ...]:
+    """Return the configured historical years in stable ascending order."""
+    raw_years = config.get("history_years", DEFAULT_HISTORY_YEARS)
+    if not isinstance(raw_years, (list, tuple)) or not raw_years:
+        raise ValueError("history_years must be a non-empty list")
+    try:
+        years = tuple(int(year) for year in raw_years)
+    except (TypeError, ValueError) as error:
+        raise ValueError("history_years must contain integers") from error
+    if any(year < 1900 or year > 2100 for year in years):
+        raise ValueError("history_years contains an out-of-range year")
+    if years != tuple(sorted(set(years))):
+        raise ValueError("history_years must be unique and ascending")
+    return years
 
 
 def valid_coordinate(latitude: object, longitude: object) -> bool:
@@ -871,6 +888,7 @@ def history_date_range(
 
 def run_history(config: dict, client: ApiClient, generated_at: str, data_date: str, completed_date: dt.date) -> dict:
     points = active_points(config)
+    configured_years = history_years_for_config(config)
     point_results: dict[str, dict] = {}
     all_records = []
     for point_id, point in points.items():
@@ -880,7 +898,7 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
             config.get("history_start_month_day", "08-25"),
         )
         years: dict[str, dict] = {}
-        for year in (2025, 2026):
+        for year in configured_years:
             date_range = history_date_range(completed_date, year, history_start)
             if date_range is None:
                 record = invalid_record(
@@ -931,7 +949,11 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         endpoint=OPEN_METEO_ENDPOINTS["history"],
         model="ECMWF IFS 9 km historical weather / analysis",
         model_parameter="ecmwf_ifs",
-        period_start=f"2025-{config.get('history_start_month_day', '08-25')} / 2026-{config.get('history_start_month_day', '08-25')}",
+        history_years=list(configured_years),
+        period_start=" / ".join(
+            f"{year}-{config.get('history_start_month_day', '08-25')}"
+            for year in configured_years
+        ),
         period_end=data_date,
         note="Historical IFS is reanalysis/analysis, not station observation.",
         points=point_results,
@@ -1067,7 +1089,7 @@ def numeric_deltas(current: dict, baseline: dict) -> dict:
     return delta
 
 
-def driver_direction(current: dict, baseline: dict) -> dict:
+def driver_direction(current: dict, baseline: dict, baseline_year: int = 2025) -> dict:
     current_index = current.get("coldness_index")
     baseline_index = baseline.get("coldness_index")
     current_counts = current.get("threshold_nights", {})
@@ -1096,68 +1118,136 @@ def driver_direction(current: dict, baseline: dict) -> dict:
         "strength": strength,
         "evidence": {
             "current_2026": current,
-            "baseline_2025": baseline,
-            "delta_2026_minus_2025": numeric_deltas(current, baseline),
+            f"baseline_{baseline_year}": baseline,
+            f"delta_2026_minus_{baseline_year}": numeric_deltas(current, baseline),
             "threshold_count_delta_sum": count_delta,
             "interpretation": "weather_driver_only; requires ChatGPT visual evidence for actual phenology assessment",
         },
     }
 
 
+def undetermined_weather_driver(reason: str) -> dict:
+    return {
+        "direction": "UNDETERMINED",
+        "strength": "WEAK",
+        "evidence": {"reason": reason},
+    }
+
+
+def historical_same_grid_qa(years: dict[str, dict], configured_years: tuple[int, ...]) -> dict:
+    """Require every configured historical year to use one returned model grid."""
+    year_keys = [str(year) for year in configured_years]
+    grids = {
+        year: (years.get(year, {}).get("response") or {}).get("grid_coordinate")
+        for year in year_keys
+    }
+    requested_coordinates = {
+        year: (years.get(year, {}).get("request") or {}).get("coordinate")
+        for year in year_keys
+    }
+    pairwise = {}
+    for index, left in enumerate(year_keys):
+        for right in year_keys[index + 1:]:
+            if grids[left] and grids[right]:
+                pairwise[f"{left}_vs_{right}"] = "PASS" if grids[left] == grids[right] else "FAIL"
+            else:
+                pairwise[f"{left}_vs_{right}"] = "UNAVAILABLE"
+    available_grids = [grids[year] for year in year_keys if grids[year]]
+    if len(available_grids) != len(year_keys):
+        grid_status = "UNAVAILABLE"
+    else:
+        grid_status = "PASS" if len({json.dumps(grid, sort_keys=True) for grid in available_grids}) == 1 else "FAIL"
+    available_coordinates = [requested_coordinates[year] for year in year_keys if requested_coordinates[year]]
+    if len(available_coordinates) != len(year_keys):
+        coordinate_status = "UNAVAILABLE"
+    else:
+        coordinate_status = "PASS" if len({json.dumps(coordinate, sort_keys=True) for coordinate in available_coordinates}) == 1 else "FAIL"
+    final_status = "PASS" if grid_status == "PASS" and coordinate_status == "PASS" else "FAILED"
+    reason = None
+    if grid_status == "FAIL":
+        reason = "HISTORICAL_GRID_MISMATCH"
+    elif coordinate_status == "FAIL":
+        reason = "HISTORICAL_REQUEST_COORDINATE_MISMATCH"
+    elif final_status == "FAILED":
+        reason = "HISTORICAL_GRID_OR_COORDINATE_UNAVAILABLE"
+    result = {
+        "status": grid_status,
+        "final_status": final_status,
+        "checked_years": year_keys,
+        "returned_grids": grids,
+        "pairwise": pairwise,
+        "same_requested_coordinate": coordinate_status,
+        "requested_coordinates": requested_coordinates,
+        "reason": reason,
+    }
+    # Preserve the v1.0/v1.1 pairwise fields for existing ChatGPT readers.
+    for year in ("2025", "2026"):
+        result[f"returned_grid_{year}"] = grids.get(year)
+    return result
+
+
 def build_history_comparison(config: dict, point_results: dict[str, dict], data_date: str) -> dict:
+    configured_years = history_years_for_config(config)
+    current_year = 2026
     comparisons: dict[str, dict] = {}
     for point_id, result in point_results.items():
         years = result["years"]
-        daily_2025 = years.get("2025", {}).get("daily", []) if years.get("2025", {}).get("status") == "PASS" else []
-        daily_2026 = years.get("2026", {}).get("daily", []) if years.get("2026", {}).get("status") == "PASS" else []
-        metrics_2025 = period_metrics(daily_2025)
-        metrics_2026 = period_metrics(daily_2026)
-        response_2025 = years.get("2025", {}).get("response") or {}
-        response_2026 = years.get("2026", {}).get("response") or {}
-        grid_2025 = response_2025.get("grid_coordinate")
-        grid_2026 = response_2026.get("grid_coordinate")
-        same_grid = (
-            "PASS"
-            if grid_2025 and grid_2026 and grid_2025 == grid_2026
-            else "FAIL"
-            if grid_2025 and grid_2026
-            else "UNAVAILABLE"
-        )
+        daily_by_year = {
+            str(year): (
+                years.get(str(year), {}).get("daily", [])
+                if years.get(str(year), {}).get("status") == "PASS"
+                else []
+            )
+            for year in configured_years
+        }
+        metrics_by_year = {
+            year: period_metrics(days)
+            for year, days in daily_by_year.items()
+        }
+        same_grid_qa = historical_same_grid_qa(years, configured_years)
         history_start = result.get("history_start_month_day")
         if not history_start:
             history_start = config.get("regions", {}).get(result["point"]["region"], {}).get(
                 "history_start_month_day",
                 config.get("history_start_month_day", "08-25"),
             )
-        comparison_status = "OK" if daily_2025 and daily_2026 and same_grid != "FAIL" else "FAILED"
-        comparison_delta = numeric_deltas(metrics_2026, metrics_2025) if comparison_status == "OK" else {}
+        complete_years = all(
+            years.get(str(year), {}).get("status") == "PASS" and daily_by_year[str(year)]
+            for year in configured_years
+        )
+        comparison_status = (
+            "OK"
+            if complete_years and same_grid_qa["final_status"] == "PASS"
+            else "FAILED"
+        )
+        metrics_2026 = metrics_by_year.get(str(current_year), {})
+        comparison_deltas = {
+            str(year): numeric_deltas(metrics_2026, metrics_by_year[str(year)])
+            for year in configured_years
+            if year != current_year and comparison_status == "OK"
+        }
         comparison = {
             "point_id": point_id,
             "region": result["point"]["region"],
             "status": comparison_status,
             "period_start": history_start,
             "period_end": data_date,
-            "daily": {"2025": daily_2025, "2026": daily_2026},
-            "metrics": {"2025": metrics_2025, "2026": metrics_2026},
-            "delta_2026_minus_2025": comparison_delta,
-            "same_grid_qa": {
-                "status": same_grid,
-                "returned_grid_2025": grid_2025,
-                "returned_grid_2026": grid_2026,
-                "same_requested_coordinate": (
-                    "PASS"
-                    if years.get("2025", {}).get("request", {}).get("coordinate")
-                    and years.get("2025", {}).get("request", {}).get("coordinate")
-                    == years.get("2026", {}).get("request", {}).get("coordinate")
-                    else "FAIL"
-                    if years.get("2025", {}).get("request", {}).get("coordinate")
-                    and years.get("2026", {}).get("request", {}).get("coordinate")
-                    else "UNAVAILABLE"
-                ),
-            },
+            "daily": daily_by_year,
+            "metrics": metrics_by_year,
+            "deltas_2026_minus": comparison_deltas,
+            "delta_2026_minus_2023": comparison_deltas.get("2023", {}),
+            "delta_2026_minus_2024": comparison_deltas.get("2024", {}),
+            "delta_2026_minus_2025": comparison_deltas.get("2025", {}),
+            "same_grid_qa": same_grid_qa,
         }
         if config.get("namespace") != "ejina":
-            comparison["weather_driver_vs_2025"] = driver_direction(metrics_2026, metrics_2025)
+            for year in configured_years:
+                if year != current_year:
+                    comparison[f"weather_driver_vs_{year}"] = driver_direction(
+                        metrics_2026,
+                        metrics_by_year.get(str(year), {}),
+                        baseline_year=year,
+                    )
         comparisons[point_id] = comparison
     region_summaries: dict[str, dict] = {}
     for region_id in core_region_ids(config):
@@ -1175,7 +1265,9 @@ def build_history_comparison(config: dict, point_results: dict[str, dict], data_
             }
             if config.get("namespace") != "ejina":
                 region_summary["visit_date"] = region_config.get("primary_visit_date")
-                region_summary["weather_driver_vs_2025"] = comparison["weather_driver_vs_2025"]
+                for year in configured_years:
+                    if year != current_year:
+                        region_summary[f"weather_driver_vs_{year}"] = comparison[f"weather_driver_vs_{year}"]
             region_summaries[region_id] = region_summary
     return {"points": comparisons, "regions": region_summaries}
 
@@ -3022,10 +3114,11 @@ def build_summary(
             regions[region_id] = {
                 "visit_date": region_config.get("primary_visit_date"),
                 "usable_for_main_chain": False,
-                "weather_driver_vs_2025": {
-                    "direction": "UNDETERMINED",
-                    "strength": "WEAK",
-                    "evidence": {"reason": "NO_VERIFIED_CORE_POINT"},
+                "weather_driver_vs_2025": undetermined_weather_driver("NO_VERIFIED_CORE_POINT"),
+                **{
+                    f"weather_driver_vs_{year}": undetermined_weather_driver("NO_VERIFIED_CORE_POINT")
+                    for year in history_years_for_config(config)
+                    if year not in (2025, 2026)
                 },
                 "forecast_0_7d": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
                 "forecast_8_15d": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
@@ -3051,10 +3144,11 @@ def build_summary(
             "visit_date": region_config.get("primary_visit_date"),
             "usable_for_main_chain": True,
             "core_point_id": core_id,
-            "weather_driver_vs_2025": (history_region or {}).get("weather_driver_vs_2025") or {
-                "direction": "UNDETERMINED",
-                "strength": "WEAK",
-                "evidence": {"reason": "HISTORY_INVALID"},
+            "weather_driver_vs_2025": (history_region or {}).get("weather_driver_vs_2025") or undetermined_weather_driver("HISTORY_INVALID"),
+            **{
+                f"weather_driver_vs_{year}": (history_region or {}).get(f"weather_driver_vs_{year}") or undetermined_weather_driver("HISTORY_INVALID")
+                for year in history_years_for_config(config)
+                if year not in (2025, 2026)
             },
             "forecast_0_7d": forecast_short,
             "forecast_8_15d": forecast_long,
@@ -3070,6 +3164,7 @@ def build_summary(
         "data_date": data_date,
         "forecast_date": now_local.date().isoformat(),
         "completed_history_date": data_date,
+        "history_years": list(history_years_for_config(config)),
         "visit_dates": {
             region_id: config["regions"][region_id].get("visit_dates", [])
             for region_id in config["regions"]
@@ -3605,6 +3700,7 @@ def build_status(
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
         "data_date": data_date,
+        "history_years": list(history_years_for_config(config)),
         "pipeline_status": pipeline_status,
         "modules": module_values | {
             "spatial_sampling": modules.get("spatial_sampling", {}).get("status", "FAILED"),
