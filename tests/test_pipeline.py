@@ -315,6 +315,20 @@ class PipelineUnitTests(unittest.TestCase):
             light["regions"]["hemu"]["composite"]["years"]["2026"]["d0_7"]["status"],
             "OK",
         )
+        for region_id in ("kanas", "hemu"):
+            region = light["regions"][region_id]
+            self.assertTrue(region["usable_for_main_chain"])
+            self.assertTrue(region["composite"]["usable_for_main_chain"])
+            d0_7 = region["composite"]["years"]["2026"]["d0_7"]
+            d8_15 = region["composite"]["years"]["2026"]["d8_15"]
+            d16 = region["composite"]["years"]["2026"]["d16_to_10_06"]
+            self.assertTrue(d0_7["usable_for_main_chain"])
+            self.assertFalse(d8_15["usable_for_main_chain"])
+            self.assertTrue(d8_15["usable_for_trend_reference"])
+            self.assertEqual(d8_15["availability_note"], "9/10–16预测，9/17待补")
+            self.assertEqual(d16["status"], "INVALID")
+            self.assertFalse(d16["usable_for_main_chain"])
+            self.assertFalse(d16["usable_for_trend_reference"])
         serialized = json.dumps(light, ensure_ascii=False).lower()
         self.assertNotIn('"hourly"', serialized)
         self.assertNotIn('"daily"', serialized)
@@ -732,6 +746,10 @@ class PipelineUnitTests(unittest.TestCase):
         with compact_schema_path.open(encoding="utf-8") as handle:
             compact_schema = json.load(handle)
         self.assertIn("hemu_aggregation", compact_schema["properties"]["model_policy"].get("properties", {}))
+        light_window_properties = compact_schema["$defs"]["light_window"]["properties"]
+        self.assertIn("usable_for_main_chain", light_window_properties)
+        self.assertIn("usable_for_trend_reference", light_window_properties)
+        self.assertIn("availability_note", light_window_properties)
 
     def test_zero_values_are_not_treated_as_missing_in_risk_checks(self):
         wet_snow_day = self.make_day("2026-09-01", 0)

@@ -36,6 +36,9 @@
       "required": ["status", "start_date", "end_date", "expected_days", "days_available", "missing_dates"],
       "properties": {
         "status": {"type": "string", "enum": ["OK", "PARTIAL", "INVALID", "UNAVAILABLE"]},
+        "usable_for_main_chain": {"type": "boolean"},
+        "usable_for_trend_reference": {"type": "boolean"},
+        "availability_note": {"type": ["string", "null"]},
         "start_date": {"type": ["string", "null"], "format": "date"},
         "end_date": {"type": ["string", "null"], "format": "date"},
         "expected_days": {"type": "integer", "minimum": 0},

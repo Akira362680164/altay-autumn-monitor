@@ -133,6 +133,8 @@ max(0, 10 - daily_mean)
 
 每个 VERIFIED 核心区域提供 `regions.<region>.years.<year>.d0_7`、`d8_15` 和 `d16_to_10_06` 三个窗口。以 2026-09-02 为例，三个窗口分别是 09-02/09-09、09-10/09-17、09-18/10-06，均包含首尾；日期随每日 anchor 滚动，10-07 及以后永远不请求、不写入输出。窗口同时保留每日温度、降水、降雪、日照和最大阵风，以及窗口统计和前 3 日/后 3 日平均温度变化。
 
+窗口可用性独立判断：`d0_7.status=OK` 且 `usable_for_main_chain=true` 时进入当前主链；`d8_15.status=PARTIAL` 时保留已完成日期并将 `usable_for_trend_reference=true`，例如 `9/10–16预测，9/17待补`；`d16_to_10_06.status=INVALID` 时 `usable_for_main_chain=false`，不参与当前结论。单个窗口缺失不会把整个地区标记为 `usable_for_main_chain=false`；地区级可用性以当前 `d0_7` 是否可用为准。
+
 每个核心点的 `same_grid_qa` 会检查 2023、2024、2025 的请求坐标、返回模式格点、返回高程、格点距离、时区、模型和 API request metadata。三年返回格点完全一致且每年 QA 通过时，`cross_year_comparison_usable=true`；任何年份失败、格点不一致或超过现有历史格点距离限制时，点和区域标记为 `FAILED`，不进入跨年比较。禾木的 valley/backhill 也执行相同三年同格点闸门，只有两个子区均通过后才形成 `hemu` composite。
 
 喀纳斯在该文件中额外提供 `regions.kanas.subregions.<subregion>.years.<year>.<window>` 和 `regions.kanas.composite.years.<year>.<window>`。2023、2024、2025 的历史路径与 2026 的 HRES 预报使用同一注册点集合、同一返回格点去重算法和同一两级聚合规则；不同 API 产品的网格坐标本身不强行要求相同。只有历史参考年之间的 `same_grid_qa` 通过后，历史跨年聚合才可用。

@@ -1830,15 +1830,23 @@ def equal_mean_subregion_window(
         and (item.get("metrics") or any(key in item for key in LIGHTWEIGHT_WINDOW_METRIC_KEYS))
     ]
     if len(metric_items) != len(items):
+        missing_dates = sorted({date_value for item in items for date_value in item.get("missing_dates", [])})
+        if not metric_items and not missing_dates:
+            missing_dates = _window_expected_dates(definition)
+        status = "PARTIAL" if metric_items else "INVALID"
         return {
-            "status": "PARTIAL",
+            "status": status,
             "start_date": definition.get("start_date"),
             "end_date": definition.get("end_date"),
             "expected_days": max((item.get("expected_days", 0) for item in items), default=0),
             "days_available": min((item.get("days_available", 0) for item in items), default=0),
-            "missing_dates": sorted({date_value for item in items for date_value in item.get("missing_dates", [])}),
+            "missing_dates": missing_dates,
             "metrics": None,
-            "reason": f"{region_id.upper()}_COMPOSITE_SUBREGION_MISSING",
+            "reason": (
+                f"{region_id.upper()}_COMPOSITE_SUBREGION_WINDOW_PARTIAL"
+                if status == "PARTIAL"
+                else "NO_COMPLETE_UNIQUE_GRID_WINDOW"
+            ),
             "available_subregions": len(metric_items),
             "expected_subregions": len(items),
         }
@@ -4354,9 +4362,80 @@ def flattened_lightweight_window(window: dict | None) -> dict:
     return output
 
 
+def _month_day_label(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = dt.date.fromisoformat(value)
+    return f"{parsed.month}/{parsed.day}"
+
+
+def _forecast_window_availability_note(window: dict, status: str) -> str | None:
+    if status == "OK":
+        return None
+    if status == "INVALID":
+        return "窗口无有效数据，不进入主链"
+    if status != "PARTIAL":
+        return "窗口不可用，不进入主链"
+    pending = sorted({
+        value
+        for key in ("missing_dates", "incomplete_dates")
+        for value in (window.get(key) or [])
+        if value
+    })
+    start = window.get("start_date")
+    end = window.get("end_date")
+    if not pending or not start or not end:
+        return "窗口部分可用，可作趋势参考"
+    start_date = dt.date.fromisoformat(start)
+    end_date = dt.date.fromisoformat(end)
+    first_pending = dt.date.fromisoformat(pending[0])
+    expected_pending = []
+    cursor = first_pending
+    while cursor <= end_date:
+        expected_pending.append(cursor.isoformat())
+        cursor += dt.timedelta(days=1)
+    if first_pending > start_date and pending == expected_pending:
+        available_end = first_pending - dt.timedelta(days=1)
+        available_range = (
+            f"{start_date.month}/{start_date.day}–{available_end.day}"
+            if start_date.month == available_end.month
+            else f"{_month_day_label(start)}–{_month_day_label(available_end.isoformat())}"
+        )
+        return (
+            f"{available_range}预测，"
+            f"{_month_day_label(first_pending.isoformat())}待补"
+        )
+    pending_label = "、".join(_month_day_label(value) or value for value in pending)
+    return f"窗口部分可用，可作趋势参考；待补：{pending_label}"
+
+
+def forecast_window_view(window: dict | None) -> dict:
+    """Expose forecast availability per window instead of gating the region globally."""
+    output = flattened_lightweight_window(window)
+    status = output.get("status", "UNAVAILABLE")
+    raw_window = window if isinstance(window, dict) else {}
+    has_metrics = isinstance(raw_window.get("metrics"), dict)
+    output["usable_for_main_chain"] = status == "OK"
+    output["usable_for_trend_reference"] = status in {"OK", "PARTIAL"} and bool(
+        output.get("days_available", 0) and has_metrics
+    )
+    output["availability_note"] = _forecast_window_availability_note(output, status)
+    return output
+
+
 def unavailable_lightweight_windows(forecast_date: dt.date, reason: str) -> dict:
     return {
         key: flattened_lightweight_window(
+            lightweight_window_summary([], definition, allow_partial=True)
+            | {"status": "UNAVAILABLE", "reason": reason}
+        )
+        for key, definition in history_forward_windows_for_year(forecast_date, 2026).items()
+    }
+
+
+def unavailable_forecast_windows(forecast_date: dt.date, reason: str) -> dict:
+    return {
+        key: forecast_window_view(
             lightweight_window_summary([], definition, allow_partial=True)
             | {"status": "UNAVAILABLE", "reason": reason}
         )
@@ -4448,13 +4527,13 @@ def point_year_lightweight_views(
     forecast_record = (hres.get("points") or {}).get(point_id)
     if forecast_record and forecast_record.get("status") == "PASS":
         years["2026"] = {
-            key: flattened_lightweight_window(
+            key: forecast_window_view(
                 lightweight_window_summary(forecast_record.get("daily", []), definition, allow_partial=True)
             )
             for key, definition in definitions_2026.items()
         }
     else:
-        years["2026"] = unavailable_lightweight_windows(forecast_date, "HRES_POINT_INVALID")
+        years["2026"] = unavailable_forecast_windows(forecast_date, "HRES_POINT_INVALID")
     history_sampling = {}
     for year in HISTORY_FORWARD_YEARS:
         record = (forward_point.get("years") or {}).get(str(year))
@@ -4527,7 +4606,8 @@ def build_region_forecast_subregion(
         "subregion": subregion_id,
         "name": registry_item.get("name", subregion_id),
         "status": status,
-        "usable_for_main_chain": bool(unique_records),
+        "usable_for_main_chain": bool(unique_records)
+        and years["2026"].get("d0_7", {}).get("status") == "OK",
         "sampling": light_sampling_from_records(
             config,
             point_ids,
@@ -4585,15 +4665,18 @@ def combine_region_light_years(
         for subregion_id in subregion_keys:
             item = subregions.get(subregion_id) or {}
             window = (item.get("years", {}).get("2026", {}) or {}).get(key)
-            if not window or window.get("status") not in {"OK", "PARTIAL"}:
-                items.append({"status": "PARTIAL", "metrics": None})
+            if not window:
+                items.append(
+                    lightweight_window_summary([], definition, allow_partial=True)
+                    | {"reason": "SUBREGION_WINDOW_UNAVAILABLE"}
+                )
             else:
                 items.append(window)
         forecast_year[key] = equal_mean_subregion_window(items, definition, region_id=region_id)
         if forecast_year[key].get("status") != "OK":
             forecast_year["status"] = "PARTIAL"
     years["2026"] = {
-        key: flattened_lightweight_window(forecast_year.get(key))
+        key: forecast_window_view(forecast_year.get(key))
         for key in definitions_2026
     }
     return years
@@ -4737,31 +4820,39 @@ def build_registered_light_region(
                 for year in HISTORY_FORWARD_YEARS
             }
         forecast_year = {
-            key: flattened_lightweight_window(
+            key: forecast_window_view(
                 (forecast_subregion.get("years") or {}).get("2026", {}).get(key)
             )
             for key in HISTORY_FORWARD_WINDOW_KEYS
         }
         forecast_status = forecast_subregion.get("status")
         history_status = (history_subregion or {}).get("status")
+        forecast_sampling = forecast_subregion.get("sampling") or {}
+        historical_sampling = (
+            light_sampling_from_history_subregion(history_subregion)
+            if history_subregion
+            else {"status": "INVALID", "reason": "HISTORY_FORWARD_SUBREGION_UNAVAILABLE"}
+        )
         if forecast_status == "OK" and history_status == "OK":
             subregion_status = "OK"
         elif forecast_subregion.get("usable_for_main_chain") or (history_subregion or {}).get("usable_for_main_chain"):
             subregion_status = "PARTIAL"
         else:
             subregion_status = "INVALID"
-        sampling_status = "OK" if subregion_status == "OK" else subregion_status
+        if forecast_sampling.get("status") == "OK" and historical_sampling.get("status") == "OK":
+            sampling_status = "OK"
+        elif forecast_sampling.get("status") in {"OK", "PARTIAL"} or historical_sampling.get("status") in {"OK", "PARTIAL"}:
+            sampling_status = "PARTIAL"
+        else:
+            sampling_status = "INVALID"
         subregion_views[subregion_id] = {
             "name": forecast_subregion.get("name") or (history_subregion or {}).get("name"),
             "status": subregion_status,
+            "usable_for_main_chain": forecast_year["d0_7"].get("usable_for_main_chain", False),
             "sampling": {
                 "status": sampling_status,
-                "forecast_2026": forecast_subregion.get("sampling"),
-                "historical_2023_2025": (
-                    light_sampling_from_history_subregion(history_subregion)
-                    if history_subregion
-                    else {"status": "INVALID", "reason": "HISTORY_FORWARD_SUBREGION_UNAVAILABLE"}
-                ),
+                "forecast_2026": forecast_sampling,
+                "historical_2023_2025": historical_sampling,
             },
             "years": {**history_years, "2026": forecast_year},
             "reason": (
@@ -4785,20 +4876,39 @@ def build_registered_light_region(
         composite_status = "PARTIAL"
     else:
         composite_status = "INVALID"
+    composite_forecast = composite_years.get("2026", {})
+    composite_usable_for_main_chain = composite_forecast.get("d0_7", {}).get(
+        "usable_for_main_chain",
+        False,
+    )
+    composite_sampling_status = (
+        "OK"
+        if subregion_views and all(
+            (item.get("sampling") or {}).get("status") == "OK"
+            for item in subregion_views.values()
+        )
+        else "PARTIAL"
+        if any(
+            (item.get("sampling") or {}).get("status") in {"OK", "PARTIAL"}
+            for item in subregion_views.values()
+        )
+        else "INVALID"
+    )
     return {
         "name": region_config.get("name", region_id),
-        "usable_for_main_chain": composite_status == "OK",
+        "usable_for_main_chain": composite_usable_for_main_chain,
         "status": composite_status,
         "subregions": subregion_views,
         "composite": {
             "status": composite_status,
+            "usable_for_main_chain": composite_usable_for_main_chain,
             "aggregation": (
                 f"equal_mean_of_{region_id}_subregions; "
                 f"{', '.join(subregion_keys)} each weight=1/{len(subregion_keys)}; "
                 "no point-count weighting"
             ),
             "sampling": {
-                "status": composite_status,
+                "status": composite_sampling_status,
                 "subregions": {
                     key: copy.deepcopy(value.get("sampling"))
                     for key, value in subregion_views.items()
