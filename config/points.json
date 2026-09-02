@@ -36,12 +36,30 @@
       "visit_dates": ["2026-10-05", "2026-10-06"]
     }
   },
+  "kanas_subregions": {
+    "sanwan": {
+      "name": "三湾河谷",
+      "point_ids": ["K1", "K2", "K3"],
+      "minimum_verified_unique_grids": 2
+    },
+    "lake": {
+      "name": "喀纳斯湖区",
+      "point_ids": ["K4", "K5", "K6"],
+      "minimum_verified_unique_grids": 1
+    },
+    "guanyutai": {
+      "name": "观鱼台山地",
+      "point_ids": ["K7", "K8", "K9"],
+      "minimum_verified_unique_grids": 1
+    }
+  },
   "points": {
     "K1": {
       "name": "喀纳斯神仙湾",
       "region": "kanas",
       "status": "VERIFIED",
       "role": "core",
+      "subregion": "sanwan",
       "latitude": 48.65688,
       "longitude": 87.03412
     },
@@ -50,6 +68,7 @@
       "region": "kanas",
       "status": "VERIFIED",
       "role": "supporting",
+      "subregion": "sanwan",
       "latitude": 48.62947,
       "longitude": 87.04162
     },
@@ -58,6 +77,7 @@
       "region": "kanas",
       "status": "VERIFIED",
       "role": "supporting",
+      "subregion": "sanwan",
       "latitude": 48.61991,
       "longitude": 87.04873
     },
@@ -84,7 +104,77 @@
       "role": "supporting",
       "latitude": 48.69931,
       "longitude": 87.03475,
+      "subregion": "lake",
       "reason": "保留坐标槽位，尚未进入正式主链"
+    },
+    "K5": {
+      "name": "喀纳斯游客服务中心/换乘中心",
+      "region": "kanas",
+      "status": "VERIFIED",
+      "role": "subregion_anchor",
+      "subregion": "lake",
+      "latitude": 48.692136,
+      "longitude": 87.029775,
+      "coordinate_verification": "公开高德地图 POI 坐标，作为湖区游客活动与换乘核心锚点",
+      "coordinate_sources": [
+        {
+          "name": "高德地图公开 POI：喀纳斯游客服务中心站",
+          "url": "https://ditu.amap.com/place/BV09303042"
+        }
+      ]
+    },
+    "K6": {
+      "name": "喀纳斯湖北侧森林参考点",
+      "region": "kanas",
+      "status": "PROVISIONAL",
+      "role": "subregion_candidate",
+      "subregion": "lake",
+      "latitude": 48.81667,
+      "longitude": 87.03333,
+      "coordinate_verification": "公开地图中的喀纳斯湖区域参考坐标；不能确认具体岸线/森林采样位置",
+      "coordinate_sources": [
+        {
+          "name": "Mapcarta / OpenStreetMap 喀纳斯湖区域参考",
+          "url": "https://mapcarta.com/28023862"
+        }
+      ],
+      "reason": "湖区北侧候选坐标尚未完成岸线与森林带核验"
+    },
+    "K7": {
+      "name": "喀纳斯观鱼台主体",
+      "region": "kanas",
+      "status": "VERIFIED",
+      "role": "subregion_anchor",
+      "subregion": "guanyutai",
+      "latitude": 48.72578,
+      "longitude": 86.99051,
+      "coordinate_verification": "公开 OpenStreetMap tourism=viewpoint 节点，经 Mapcarta 交叉呈现",
+      "coordinate_sources": [
+        {
+          "name": "Mapcarta / OpenStreetMap 观鱼台",
+          "url": "https://mapcarta.com/N2970777553"
+        }
+      ]
+    },
+    "K8": {
+      "name": "观鱼台东南侧山坡森林带候选",
+      "region": "kanas",
+      "status": "PROVISIONAL",
+      "role": "subregion_candidate",
+      "subregion": "guanyutai",
+      "latitude": 48.7195,
+      "longitude": 86.997,
+      "reason": "观鱼台周边山坡候选坐标，待公开地图地物或实地路线核验"
+    },
+    "K9": {
+      "name": "观鱼台北侧山坡森林带候选",
+      "region": "kanas",
+      "status": "PROVISIONAL",
+      "role": "subregion_candidate",
+      "subregion": "guanyutai",
+      "latitude": 48.732,
+      "longitude": 86.9855,
+      "reason": "观鱼台周边山坡候选坐标，待公开地图地物或实地路线核验"
     },
     "H1": {
       "name": "禾木村/河谷",

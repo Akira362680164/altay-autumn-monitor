@@ -4,7 +4,7 @@
 
 ## ChatGPT Entry Points
 
-以下地址是公开 GitHub Raw URL，无需登录即可读取。日常优先读取前两个文件：
+以下地址是公开 GitHub Raw URL，无需登录即可读取。日常优先读取 `status.json` 和轻量 `phenology_weather_summary.json`；`summary.json` 保留现有日报字段。
 
 - status.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/status.json>
 - summary.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/summary.json>
@@ -16,6 +16,8 @@
 - single_runs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/single_runs.json>
 - spatial_sampling.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/spatial_sampling.json>
 - long_range.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/long_range.json>
+- phenology_weather_summary.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/phenology_weather_summary.json>
+- grid_registry.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/grid_registry.json>
 
 额济纳使用独立 `ejina` namespace；日常读取其前两个入口：
 
@@ -65,10 +67,18 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 - K1 喀纳斯神仙湾：`48.65688, 87.03412`
 - K2 喀纳斯月亮湾：`48.62947, 87.04162`
 - K3 喀纳斯卧龙湾：`48.61991, 87.04873`
+- K5 喀纳斯游客服务中心/换乘中心：`48.692136, 87.029775`（[高德公开 POI](https://ditu.amap.com/place/BV09303042)）
+- K7 喀纳斯观鱼台主体：`48.72578, 86.99051`（[Mapcarta / OpenStreetMap 节点](https://mapcarta.com/N2970777553)）
 - B1 白哈巴村核心：`48.69583, 86.78382`
 - C1 可可托海镇/额尔齐斯河谷：`47.22061, 89.80911`
 
-K4 老村、H1/H2 禾木、B2 白哈巴东坡、C2 神钟山/峡谷保留为 `PROVISIONAL`，会在 `status.json` 中列出但 `usable_for_main_chain=false`。由于禾木当前没有 VERIFIED 核心点，H1 不会进入正式天气差分。阿禾公路和 G331 只保留 `ROUTE_NOT_VERIFIED` 槽位，未确认用户实际路线前不进入数值链。
+喀纳斯注册为三个子区：`sanwan` 三湾河谷（K1/K2/K3）、`lake` 湖区（K4/K5/K6）和 `guanyutai` 观鱼台山地（K7/K8/K9）。K4、K6、K8、K9，以及 H1/H2 禾木、B2 白哈巴东坡、C2 神钟山/峡谷保留为 `PROVISIONAL`，会在 `status.json` 中列出但 `usable_for_main_chain=false`。其中 K6 使用公开湖区参考坐标，但尚未核实具体岸线/森林位置；K8/K9 是观鱼台周边山坡候选坐标。当前三湾有 2 个 VERIFIED 独立 HRES 格点，湖区和观鱼台各只有 1 个 VERIFIED 粗格点；后两者按各自实际唯一格点计算，并在 `sampling` 中保留低空间分辨率事实，不会用 PROVISIONAL 点补齐。由于禾木当前没有 VERIFIED 核心点，H1 不会进入正式天气差分。阿禾公路和 G331 只保留 `ROUTE_NOT_VERIFIED` 槽位，未确认用户实际路线前不进入数值链。
+
+### 喀纳斯分区与返回格点聚合
+
+喀纳斯的天气统计不再把 K1/K2/K3 或新增候选点当成等权独立样本。每个请求保存 requested coordinate、返回模式格点、高程、格点距离、时区和 QA；相同 `returned_grid_coordinate` 只保留一个独立样本，映射关系写在 `grid_registry.json` 以及轻量摘要的 `sampling` 中。
+
+子区第一层对 unique model grids 等权平均；景区 composite 第二层对 `sanwan`、`lake`、`guanyutai` 三个子区等权平均。当前配置的最低独立格点数为：三湾 2、湖区 1、观鱼台 1；这是按已核实的子区尺度和实际返回格点设置的，不把重复格点当成额外样本。任何子区低于自身门槛时，子区为 `PARTIAL`，景区 composite 也不会用其他子区替代或按点数加权。这样 K1/K2 返回同一 HRES 格点时只贡献一次，K3 的另一个格点贡献一次。
 
 ### 额济纳独立天气 namespace
 
@@ -118,6 +128,8 @@ max(0, 10 - daily_mean)
 每个 VERIFIED 核心区域提供 `regions.<region>.years.<year>.d0_7`、`d8_15` 和 `d16_to_10_06` 三个窗口。以 2026-09-02 为例，三个窗口分别是 09-02/09-09、09-10/09-17、09-18/10-06，均包含首尾；日期随每日 anchor 滚动，10-07 及以后永远不请求、不写入输出。窗口同时保留每日温度、降水、降雪、日照和最大阵风，以及窗口统计和前 3 日/后 3 日平均温度变化。
 
 每个核心点的 `same_grid_qa` 会检查 2023、2024、2025 的请求坐标、返回模式格点、返回高程、格点距离、时区、模型和 API request metadata。三年返回格点完全一致且每年 QA 通过时，`cross_year_comparison_usable=true`；任何年份失败、格点不一致或超过现有历史格点距离限制时，点和区域标记为 `FAILED`，不进入跨年比较。禾木没有 VERIFIED core point，保持 `UNAVAILABLE`，不会使用 H1/H2。
+
+喀纳斯在该文件中额外提供 `regions.kanas.subregions.<subregion>.years.<year>.<window>` 和 `regions.kanas.composite.years.<year>.<window>`。2023、2024、2025 的历史路径与 2026 的 HRES 预报使用同一注册点集合、同一返回格点去重算法和同一两级聚合规则；不同 API 产品的网格坐标本身不强行要求相同。只有历史参考年之间的 `same_grid_qa` 通过后，历史跨年聚合才可用。
 
 该文件只提供历史天气路径证据，不输出物候、秋色或旅游结论。它与 `history_comparison.json` 并行存在，不改变 HRES、ECMWF Ensemble、GFS、Single Runs、Spatial Sampling 或 Long Range 的逻辑；额济纳 namespace 不生成该文件。
 
@@ -174,12 +186,14 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── single_runs.json
 │   │   ├── spatial_sampling.json
 │   │   ├── long_range.json
+│   │   ├── grid_registry.json
+│   │   ├── phenology_weather_summary.json
 │   │   └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json
 │   └── archive/YYYY-MM-DD/
-│       ├── 同名压缩后的每日 JSON（含 history_forward.json）
+│       ├── 同名压缩后的每日 JSON（含 history_forward.json 和 phenology_weather_summary.json）
 │       ├── raw/*.json.gz
 │       └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json + raw/*.json.gz
-├── schemas/{status,summary,module,history_forward,long_range,ejina_points,ejina_status,ejina_summary}.schema.json
+├── schemas/{status,summary,module,history_forward,long_range,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt
@@ -190,7 +204,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 
 ## GitHub Actions 和本地运行
 
-`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并按 `02:30 UTC` 每日运行，即北京时间 `10:30`。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再请求 Open-Meteo，最后在 `permissions: contents: write` 下提交 `data/latest` 和 `data/archive`。
+`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并按 `00:00 UTC` 每日运行，即北京时间 `08:00`。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再请求 Open-Meteo，最后在 `permissions: contents: write` 下提交 `data/latest` 和 `data/archive`。
 
 本地运行：
 
@@ -205,9 +219,10 @@ python3.12 src/pipeline.py
 ## 推荐的 ChatGPT 每日读取顺序
 
 1. 读取 `status.json`，确认 `pipeline_status` 和 `modules`；任何 `FAILED` 模块都按缺失证据处理。
-2. 读取 `summary.json`，按 `regions` 的 `visit_date` 映射 10/1 白哈巴、10/2 喀纳斯、10/3 喀纳斯三湾→白哈巴→铁贾公路→契巴罗衣、10/4 禾木、10/5 禾木→阿禾公路→G331→可可托海、10/6 可可托海、10/7 返程。
-3. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层；需要查看历史同期后续路径时读取 `history_forward.json`，先检查其 `status` 和各区域 `same_grid_qa`。
-4. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
-5. 读取 `long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED` 或 `UNDETERMINED` 时保留不确定性。
+2. 日常读取 `phenology_weather_summary.json`，按 `regions` 读取 B1、Kanas 三子区/composite、C1 的 2023–2026 窗口统计；该文件不含 hourly/daily 原始数组。
+3. 读取 `summary.json`，按 `regions` 的 `visit_date` 映射 10/1 白哈巴、10/2 喀纳斯、10/3 喀纳斯三湾→白哈巴→铁贾公路→契巴罗衣、10/4 禾木、10/5 禾木→阿禾公路→G331→可可托海、10/6 可可托海、10/7 返程。
+4. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层；需要查看完整历史同期后续路径时读取 `history_forward.json`，先检查其 `status`、Kanas `subregion_aggregation_status` 和各区域 `same_grid_qa`。
+5. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
+6. 读取 `grid_registry.json`、`long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED`、`PARTIAL` 或 `UNDETERMINED` 时保留不确定性。
 
 当前 v1.1.0 Schema 已覆盖长期背景层。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。

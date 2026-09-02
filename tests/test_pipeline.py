@@ -106,6 +106,175 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(summary["cold_pool_coverage"]["next_7d"]["total_cells"], 2)
         self.assertEqual(summary["cold_pool_coverage"]["next_7d"]["label"], "mixed")
 
+    def test_kanas_subregion_registry_keeps_provisional_points_out(self):
+        config = pipeline.load_config()
+        registry = pipeline.kanas_subregion_registry(config)
+        self.assertEqual(set(registry), {"sanwan", "lake", "guanyutai"})
+        self.assertEqual(registry["sanwan"]["point_ids"], ["K1", "K2", "K3"])
+        self.assertEqual(registry["lake"]["point_ids"], ["K4", "K5", "K6"])
+        self.assertEqual(registry["guanyutai"]["point_ids"], ["K7", "K8", "K9"])
+        self.assertEqual(pipeline.kanas_subregion_point_ids(config, "lake", verified_only=True), ["K5"])
+        self.assertEqual(pipeline.kanas_subregion_point_ids(config, "guanyutai", verified_only=True), ["K7"])
+        self.assertNotIn("K4", pipeline.active_points(config))
+        self.assertNotIn("K6", pipeline.history_forward_point_ids(config))
+        self.assertNotIn("K8", pipeline.history_forward_point_ids(config))
+
+    def test_kanas_unique_grid_sampling_and_equal_grid_mean(self):
+        config = pipeline.load_config()
+
+        def record(point_id, grid, value):
+            point = config["points"][point_id]
+            daily = []
+            for offset in range(8):
+                day = self.make_day((date(2026, 9, 2) + timedelta(days=offset)).isoformat(), 2)
+                day["temperature_mean_c"] = value
+                day["temperature_min_c"] = value - 3
+                day["temperature_max_c"] = value + 3
+                day["night_min_c"] = value - 4
+                daily.append(day)
+            return {
+                "point_id": point_id,
+                "status": "PASS",
+                "request": {"coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]}},
+                "response": {"grid_coordinate": grid, "returned_elevation": 1900, "timezone": "Asia/Shanghai"},
+                "qa": {"final_status": "PASS", "grid_distance_km": 2, "grid_distance_limit_km": 14},
+                "daily": daily,
+            }
+
+        records = {
+            "K1": record("K1", {"latitude": 48.75, "longitude": 87.0}, 10),
+            "K2": record("K2", {"latitude": 48.7500001, "longitude": 87.0}, 10),
+            "K3": record("K3", {"latitude": 48.5, "longitude": 87.0}, 0),
+        }
+        sampling = pipeline.grid_sampling_summary(config, ["K1", "K2", "K3"], records, minimum_verified_unique_grids=2)
+        self.assertEqual(sampling["status"], "OK")
+        self.assertEqual(sampling["unique_model_grids"], 2)
+        self.assertEqual(sampling["point_to_grid"][0]["requested_coordinate"]["latitude"], 48.65688)
+        self.assertEqual(sampling["unique_grid_mappings"][0]["point_ids"], ["K1", "K2"])
+        definition = pipeline.history_forward_windows_for_year(date(2026, 9, 2), 2026)["d0_7"]
+        aggregate = pipeline.aggregate_grid_window(list(records.values()), definition)
+        self.assertEqual(aggregate["status"], "OK")
+        self.assertEqual(aggregate["metrics"]["temperature_mean_c"], 5.0)
+        self.assertEqual(aggregate["metrics"]["night_min_mean_c"], 1.0)
+
+    def test_kanas_composite_preserves_equal_subregion_temperature_trend(self):
+        definition = pipeline.history_forward_windows_for_year(date(2026, 9, 2), 2026)["d0_7"]
+        items = [
+            {
+                "status": "OK",
+                "expected_days": 8,
+                "days_available": 8,
+                "metrics": {
+                    "temperature_mean_c": 6,
+                    "temperature_trend": {
+                        "first_3_days_mean_temperature_c": 8,
+                        "last_3_days_mean_temperature_c": 4,
+                        "last_3_minus_first_3_mean_temperature_c": -4,
+                    },
+                },
+            },
+            {
+                "status": "OK",
+                "expected_days": 8,
+                "days_available": 8,
+                "metrics": {
+                    "temperature_mean_c": 8,
+                    "temperature_trend": {
+                        "first_3_days_mean_temperature_c": 7,
+                        "last_3_days_mean_temperature_c": 8,
+                        "last_3_minus_first_3_mean_temperature_c": 1,
+                    },
+                },
+            },
+            {
+                "status": "OK",
+                "expected_days": 8,
+                "days_available": 8,
+                "metrics": {
+                    "temperature_mean_c": 10,
+                    "temperature_trend": {
+                        "first_3_days_mean_temperature_c": 9,
+                        "last_3_days_mean_temperature_c": 12,
+                        "last_3_minus_first_3_mean_temperature_c": 3,
+                    },
+                },
+            },
+        ]
+        aggregate = pipeline.equal_mean_subregion_window(items, definition)
+        self.assertEqual(aggregate["status"], "OK")
+        self.assertEqual(aggregate["metrics"]["temperature_mean_c"], 8.0)
+        self.assertEqual(aggregate["metrics"]["temperature_trend"]["first_3_days_mean_temperature_c"], 8.0)
+        self.assertEqual(aggregate["metrics"]["temperature_trend"]["last_3_days_mean_temperature_c"], 8.0)
+        self.assertEqual(aggregate["metrics"]["temperature_trend"]["last_3_minus_first_3_mean_temperature_c"], 0.0)
+        self.assertEqual(aggregate["metrics"]["temperature_trend"]["direction"], "NEAR_FLAT")
+
+    def test_lightweight_summary_is_schema_valid_and_contains_no_raw_series(self):
+        config = pipeline.load_config()
+
+        def fake_fetch(_client, **kwargs):
+            point = kwargs["point"]
+            start = date.fromisoformat(kwargs["params"]["start_date"])
+            end = date.fromisoformat(kwargs["params"]["end_date"])
+            daily = []
+            cursor = start
+            while cursor <= end:
+                daily.append(self.make_day(cursor.isoformat(), 4))
+                cursor += timedelta(days=1)
+            return {
+                "point_id": point["id"],
+                "point": point,
+                "status": "PASS",
+                "source": "Open-Meteo",
+                "endpoint": pipeline.OPEN_METEO_ENDPOINTS["history"],
+                "model": "ECMWF IFS 9 km historical weather / analysis",
+                "request": {"coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]}},
+                "response": {"grid_coordinate": {"latitude": 48.75, "longitude": 87.0}, "returned_elevation": 1900, "timezone": "Asia/Shanghai"},
+                "qa": {"final_status": "PASS", "grid_distance_km": 2, "grid_distance_limit_km": pipeline.HISTORY_GRID_QA_LIMIT_KM},
+                "solar_variable": "sunshine_duration",
+                "daily": daily,
+            }
+
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            forward = pipeline.run_history_forward(
+                config,
+                object(),
+                "2026-09-02T00:00:00Z",
+                "2026-09-01",
+                date(2026, 9, 2),
+            )
+        hres_points = {}
+        for point_id in pipeline.history_forward_point_ids(config):
+            point = config["points"][point_id]
+            hres_points[point_id] = {
+                "point_id": point_id,
+                "status": "PASS",
+                "request": {"coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]}},
+                "response": {"grid_coordinate": {"latitude": 48.75, "longitude": 87.0}, "returned_elevation": 1900, "timezone": "Asia/Shanghai"},
+                "qa": {"final_status": "PASS", "grid_distance_km": 2, "grid_distance_limit_km": pipeline.HRES_GRID_QA_LIMIT_KM},
+                "daily": [self.make_day((date(2026, 9, 2) + timedelta(days=offset)).isoformat(), 4) for offset in range(15)],
+            }
+        light = pipeline.build_phenology_weather_summary(
+            config,
+            "2026-09-02T00:00:00Z",
+            "2026-09-01",
+            date(2026, 9, 2),
+            {"points": hres_points},
+            forward,
+        )
+        with (ROOT / "schemas" / "phenology_weather_summary.schema.json").open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(light)), [])
+        self.assertEqual(light["regions"]["kanas"]["composite"]["years"]["2023"]["d0_7"]["start_date"], "2023-09-02")
+        self.assertEqual(light["regions"]["kanas"]["composite"]["years"]["2023"]["d0_7"]["end_date"], "2023-09-09")
+        self.assertEqual(light["regions"]["kanas"]["composite"]["years"]["2026"]["d0_7"]["status"], "OK")
+        self.assertEqual(light["regions"]["kanas"]["composite"]["years"]["2026"]["d8_15"]["status"], "PARTIAL")
+        self.assertIsNotNone(light["regions"]["kanas"]["composite"]["years"]["2026"]["d8_15"]["temperature_mean_c"])
+        serialized = json.dumps(light, ensure_ascii=False).lower()
+        self.assertNotIn('"hourly"', serialized)
+        self.assertNotIn('"daily"', serialized)
+        for forbidden in ("actual_phenology_lead_days", "yellow_leaf_percentage", "旅游建议"):
+            self.assertNotIn(forbidden, serialized)
+
     def test_edge_missing_rows_are_trimmed_and_audited(self):
         payload = self.make_payload()
         payload["hourly"]["time"] = ["a", "b", "c"]
@@ -332,7 +501,7 @@ class PipelineUnitTests(unittest.TestCase):
                 if item.get(field):
                     self.assertLessEqual(item[field], "2026-10-06")
 
-    def test_history_forward_fetches_three_years_core_points_and_clips_cutoff(self):
+    def test_history_forward_fetches_three_years_kanas_subregion_points_and_clips_cutoff(self):
         config = pipeline.load_config()
         requests = []
 
@@ -351,10 +520,11 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(result["status"], "OK")
         self.assertEqual(result["history_years"], [2023, 2024, 2025])
         self.assertEqual(result["forecast_date"], "2026-09-02")
-        self.assertEqual(result["expected_fetches"], 9)
-        self.assertEqual(result["successful_fetches"], 9)
-        self.assertEqual(len(requests), 9)
-        self.assertEqual(set(result["points"]), {"B1", "K1", "C1"})
+        expected_points = pipeline.history_forward_point_ids(config)
+        self.assertEqual(result["expected_fetches"], len(expected_points) * 3)
+        self.assertEqual(result["successful_fetches"], len(expected_points) * 3)
+        self.assertEqual(len(requests), len(expected_points) * 3)
+        self.assertEqual(set(result["points"]), set(expected_points))
         for params in requests:
             self.assertEqual(params["models"], "ecmwf_ifs")
             self.assertEqual(params["cell_selection"], "nearest")
@@ -374,6 +544,17 @@ class PipelineUnitTests(unittest.TestCase):
                 self.assertTrue(all(day["date"] <= f"{year}-10-06" for day in region["years"][year]["d16_to_10_06"]["daily"]))
             self.assertEqual(region["same_grid_qa"]["checked_years"], ["2023", "2024", "2025"])
             self.assertEqual(region["same_grid_qa"]["final_status"], "PASS")
+        self.assertEqual(result["regions"]["kanas"]["subregions"]["sanwan"]["status"], "OK")
+        self.assertEqual(result["regions"]["kanas"]["subregions"]["lake"]["status"], "OK")
+        self.assertEqual(result["regions"]["kanas"]["subregions"]["guanyutai"]["status"], "OK")
+        self.assertEqual(result["regions"]["kanas"]["composite"]["status"], "OK")
+        for subregion_id in ("sanwan", "lake", "guanyutai"):
+            sampling = result["regions"]["kanas"]["subregions"][subregion_id]["sampling"]
+            self.assertTrue(sampling["same_unique_grid_set_across_years"])
+            self.assertEqual(
+                set(sampling["by_year"]),
+                {"2023", "2024", "2025"},
+            )
         self.assertEqual(result["regions"]["hemu"]["status"], "UNAVAILABLE")
         self.assertFalse(result["regions"]["hemu"]["usable_for_main_chain"])
         self.assertNotIn("H1", result["points"])
@@ -463,10 +644,15 @@ class PipelineUnitTests(unittest.TestCase):
                     spatial={},
                     long_range={},
                     summary={},
+                    grid_registry={"module": "grid_registry"},
+                    phenology_weather_summary={"module": "phenology_weather_summary"},
                 )
             self.assertTrue((root / "latest" / "history_forward.json").is_file())
             self.assertTrue((root / "archive" / "2026-09-02" / "history_forward.json").is_file())
             self.assertTrue((root / "archive" / "2026-09-02" / "raw" / "history_forward.json.gz").is_file())
+            self.assertTrue((root / "latest" / "grid_registry.json").is_file())
+            self.assertTrue((root / "latest" / "phenology_weather_summary.json").is_file())
+            self.assertTrue((root / "archive" / "2026-09-02" / "phenology_weather_summary.json").is_file())
 
     def test_failed_module_is_explicit_in_status(self):
         config = pipeline.load_config()
