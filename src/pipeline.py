@@ -40,6 +40,7 @@ SCHEMA_VERSION = "1.1.0"
 LEGACY_SCHEMA_VERSION = "1.0.0"
 RAW_RETENTION_DAYS = 14
 HRES_GRID_QA_LIMIT_KM = 14.0
+HISTORY_GRID_QA_LIMIT_KM = 13.5
 LONG_RANGE_GRID_QA_LIMIT_KM = 35.0
 
 OPEN_METEO_ENDPOINTS = {
@@ -80,6 +81,9 @@ LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/m
 CORE_REGION_IDS = ("baihaba", "kanas", "keketuohai")
 THRESHOLDS_C = (15.0, 10.0, 5.0, 2.0, 0.0)
 DEFAULT_HISTORY_YEARS = (2025, 2026)
+HISTORY_FORWARD_YEARS = (2023, 2024, 2025)
+HISTORY_FORWARD_CUTOFF_MONTH_DAY = "10-06"
+HISTORY_FORWARD_WINDOW_KEYS = ("d0_7", "d8_15", "d16_to_10_06")
 
 PRECISION_POLICIES = {
     "hres": [
@@ -925,7 +929,7 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
                     ),
                     variables=HRES_VARIABLES,
                     required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
-                    grid_limit_km=13.5,
+                    grid_limit_km=HISTORY_GRID_QA_LIMIT_KM,
                     log_label=f"{point_id}:HISTORY {year}",
                 )
                 if record.get("status") == "PASS":
@@ -961,6 +965,402 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         excluded_points=excluded_points(config),
         successful_fetches=sum(record.get("status") == "PASS" for record in all_records),
         failed_fetches=sum(record.get("status") != "PASS" for record in all_records),
+    )
+
+
+def history_forward_window_definitions(
+    forecast_date: dt.date,
+    cutoff_month_day: str = HISTORY_FORWARD_CUTOFF_MONTH_DAY,
+) -> list[dict]:
+    """Build rolling same-calendar-date windows, clipped at the hard cutoff."""
+    try:
+        cutoff_month, cutoff_day = (int(value) for value in cutoff_month_day.split("-", 1))
+        cutoff_date = dt.date(forecast_date.year, cutoff_month, cutoff_day)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"invalid history forward cutoff month-day: {cutoff_month_day}") from error
+    raw_windows = (
+        ("d0_7", 0, 7),
+        ("d8_15", 8, 15),
+        ("d16_to_10_06", 16, None),
+    )
+    definitions = []
+    for key, start_offset, end_offset in raw_windows:
+        requested_start = forecast_date + dt.timedelta(days=start_offset)
+        requested_end = cutoff_date if end_offset is None else forecast_date + dt.timedelta(days=end_offset)
+        if requested_start > cutoff_date:
+            definitions.append({
+                "window": key,
+                "offset_start_days": start_offset,
+                "offset_end_days": end_offset,
+                "requested_start_date": None,
+                "requested_end_date": None,
+                "start_date": None,
+                "end_date": None,
+                "cutoff_date": cutoff_date.isoformat(),
+                "status": "UNAVAILABLE",
+                "reason": "WINDOW_AFTER_CUTOFF",
+            })
+            continue
+        definitions.append({
+            "window": key,
+            "offset_start_days": start_offset,
+            "offset_end_days": end_offset,
+            "requested_start_date": requested_start.isoformat(),
+            "requested_end_date": min(requested_end, cutoff_date).isoformat(),
+            "start_date": requested_start.isoformat(),
+            "end_date": min(requested_end, cutoff_date).isoformat(),
+            "cutoff_date": cutoff_date.isoformat(),
+            "status": "OK",
+            "reason": None,
+        })
+    return definitions
+
+
+def history_forward_windows_for_year(forecast_date: dt.date, year: int) -> dict[str, dict]:
+    """Translate the current calendar windows to one historical calendar year."""
+    windows = {}
+    for definition in history_forward_window_definitions(forecast_date):
+        translated = copy.deepcopy(definition)
+        for field in ("requested_start_date", "requested_end_date", "start_date", "end_date", "cutoff_date"):
+            value = translated.get(field)
+            if value:
+                source_date = dt.date.fromisoformat(value)
+                translated[field] = dt.date(year, source_date.month, source_date.day).isoformat()
+        windows[translated["window"]] = translated
+    return windows
+
+
+def _history_forward_window_unavailable(definition: dict, reason: str) -> dict:
+    return {
+        "status": "UNAVAILABLE",
+        "usable_for_cross_year_comparison": False,
+        "start_date": definition.get("start_date"),
+        "end_date": definition.get("end_date"),
+        "expected_days": 0,
+        "days_available": 0,
+        "missing_dates": [],
+        "incomplete_dates": [],
+        "daily": [],
+        "metrics": None,
+        "reason": reason,
+    }
+
+
+def history_forward_window_summary(days: list[dict], definition: dict) -> dict:
+    """Summarize one historical window without inferring missing days."""
+    if definition.get("status") != "OK" or not definition.get("start_date") or not definition.get("end_date"):
+        return _history_forward_window_unavailable(definition, definition.get("reason") or "WINDOW_UNAVAILABLE")
+    start_date = dt.date.fromisoformat(definition["start_date"])
+    end_date = dt.date.fromisoformat(definition["end_date"])
+    expected_dates = []
+    cursor = start_date
+    while cursor <= end_date:
+        expected_dates.append(cursor.isoformat())
+        cursor += dt.timedelta(days=1)
+    selected = [
+        day for day in days
+        if isinstance(day.get("date"), str)
+        and start_date <= dt.date.fromisoformat(day["date"]) <= end_date
+    ]
+    available_dates = {day["date"] for day in selected}
+    incomplete_dates = sorted(day["date"] for day in selected if not day.get("complete"))
+    missing_dates = [value for value in expected_dates if value not in available_dates]
+    complete_days = [day for day in selected if day.get("complete")]
+    complete = not missing_dates and not incomplete_dates and len(complete_days) == len(expected_dates)
+    metrics = period_metrics(selected)
+    daily_means = [metric_value(day, "temperature_mean_c") for day in complete_days]
+    daily_means = [value for value in daily_means if value is not None]
+    daily_mins = [metric_value(day, "temperature_min_c") for day in complete_days]
+    daily_mins = [value for value in daily_mins if value is not None]
+    daily_maxs = [metric_value(day, "temperature_max_c") for day in complete_days]
+    daily_maxs = [value for value in daily_maxs if value is not None]
+    solar_values = [
+        float(day["solar_metric"]["value"])
+        for day in complete_days
+        if isinstance(day.get("solar_metric"), dict)
+        and isinstance(day["solar_metric"].get("value"), (int, float))
+    ]
+    solar_variable = next(
+        (
+            day["solar_metric"].get("variable")
+            for day in complete_days
+            if isinstance(day.get("solar_metric"), dict) and day["solar_metric"].get("variable")
+        ),
+        None,
+    )
+    solar_unit = next(
+        (
+            day["solar_metric"].get("unit")
+            for day in complete_days
+            if isinstance(day.get("solar_metric"), dict) and day["solar_metric"].get("unit")
+        ),
+        None,
+    )
+    first_three = daily_means[:3] if len(daily_means) >= 6 else []
+    last_three = daily_means[-3:] if len(daily_means) >= 6 else []
+    first_mean = safe_mean(first_three)
+    last_mean = safe_mean(last_three)
+    trend_delta = round(last_mean - first_mean, 3) if first_mean is not None and last_mean is not None else None
+    if trend_delta is None:
+        trend_direction = "UNDETERMINED"
+    elif trend_delta >= 0.5:
+        trend_direction = "WARMING"
+    elif trend_delta <= -0.5:
+        trend_direction = "COOLING"
+    else:
+        trend_direction = "NEAR_FLAT"
+    metrics.update({
+        "average_temperature_c": safe_mean(daily_means),
+        "minimum_temperature_c": round(min(daily_mins), 3) if daily_mins else None,
+        "maximum_temperature_c": round(max(daily_maxs), 3) if daily_maxs else None,
+        "total_precipitation_mm": metrics.get("precipitation_mm"),
+        "total_snowfall_cm": metrics.get("snowfall_cm"),
+        "average_daily_solar_value": safe_mean(solar_values),
+        "average_daily_solar_variable": solar_variable,
+        "average_daily_solar_unit": solar_unit,
+        "average_daily_sunshine_duration_seconds": (
+            safe_mean(solar_values) if solar_variable == "sunshine_duration" else None
+        ),
+        "maximum_wind_gust_kmh": metrics.get("wind_gust_max_kmh"),
+        "temperature_trend": {
+            "first_3_days_mean_temperature_c": first_mean,
+            "last_3_days_mean_temperature_c": last_mean,
+            "last_3_minus_first_3_mean_temperature_c": trend_delta,
+            "direction": trend_direction,
+            "method": "last_3_complete_daily_means_minus_first_3_complete_daily_means; threshold=0.5C",
+        },
+    })
+    return {
+        "status": "OK" if complete else "INVALID",
+        "usable_for_cross_year_comparison": complete,
+        "start_date": definition["start_date"],
+        "end_date": definition["end_date"],
+        "expected_days": len(expected_dates),
+        "days_available": len(complete_days),
+        "missing_dates": missing_dates,
+        "incomplete_dates": incomplete_dates,
+        "daily": selected,
+        "metrics": metrics,
+        "reason": None if complete else "HISTORY_FORWARD_WINDOW_INCOMPLETE",
+    }
+
+
+def history_forward_same_grid_qa(years: dict[str, dict]) -> dict:
+    """Apply the existing historical grid rule to the three forward-reference years."""
+    result = historical_same_grid_qa(years, HISTORY_FORWARD_YEARS)
+    year_qa = {
+        str(year): {
+            "record_status": (years.get(str(year)) or {}).get("status", "INVALID"),
+            "final_status": ((years.get(str(year)) or {}).get("qa") or {}).get("final_status", "INVALID"),
+            "grid_distance_km": ((years.get(str(year)) or {}).get("qa") or {}).get("grid_distance_km"),
+            "grid_distance_limit_km": ((years.get(str(year)) or {}).get("qa") or {}).get(
+                "grid_distance_limit_km", HISTORY_GRID_QA_LIMIT_KM
+            ),
+            "distance_check": (
+                "PASS"
+                if isinstance(((years.get(str(year)) or {}).get("qa") or {}).get("grid_distance_km"), (int, float))
+                and ((years.get(str(year)) or {}).get("qa") or {}).get("grid_distance_km") <= HISTORY_GRID_QA_LIMIT_KM
+                else "FAIL"
+            ),
+        }
+        for year in HISTORY_FORWARD_YEARS
+    }
+    result["grid_distance_limit_km"] = HISTORY_GRID_QA_LIMIT_KM
+    result["year_qa"] = year_qa
+    failed_years = [
+        year for year, item in year_qa.items()
+        if item["record_status"] != "PASS" or item["final_status"] != "PASS" or item["distance_check"] != "PASS"
+    ]
+    if failed_years:
+        result["status"] = "FAIL"
+        result["final_status"] = "FAILED"
+        result["reason"] = "HISTORY_FORWARD_YEAR_QA_FAILED:" + ",".join(failed_years)
+    result["cross_year_comparison_usable"] = result["final_status"] == "PASS"
+    return result
+
+
+def compact_history_forward_year(record: dict) -> dict:
+    item = compact_record(record)
+    for key in HISTORY_FORWARD_WINDOW_KEYS:
+        if key in record:
+            item[key] = copy.deepcopy(record[key])
+    return item
+
+
+def run_history_forward(
+    config: dict,
+    client: ApiClient,
+    generated_at: str,
+    data_date: str,
+    forecast_date: dt.date,
+) -> dict:
+    """Fetch real weather after today's calendar date for Altay reference years."""
+    if config.get("namespace") == "ejina":
+        raise ValueError("history_forward is an Altay-only module")
+    points = active_points(config)
+    window_definitions = history_forward_window_definitions(forecast_date)
+    regions = {}
+    point_results = {}
+    all_records = []
+    expected_core_regions = 0
+    for region_id, region_config in config.get("regions", {}).items():
+        core_id = region_config.get("core_point_id")
+        point = points.get(core_id) if core_id else None
+        if not point:
+            regions[region_id] = {
+                "region": region_id,
+                "core_point_id": core_id,
+                "status": "UNAVAILABLE",
+                "usable_for_main_chain": False,
+                "cross_year_comparison_usable": False,
+                "same_grid_qa": None,
+                "years": {},
+                "reason": "NO_VERIFIED_CORE_POINT",
+            }
+            log(f"[{region_id}] HISTORY_FORWARD SKIPPED: PROVISIONAL")
+            continue
+        expected_core_regions += 1
+        years = {}
+        year_region_views = {}
+        for year in HISTORY_FORWARD_YEARS:
+            year_windows = history_forward_windows_for_year(forecast_date, year)
+            valid_window_ranges = [
+                definition for definition in year_windows.values()
+                if definition.get("status") == "OK"
+            ]
+            if not valid_window_ranges:
+                record = invalid_record(
+                    point=point,
+                    source="Open-Meteo",
+                    endpoint=OPEN_METEO_ENDPOINTS["history"],
+                    model="ECMWF IFS 9 km historical weather / analysis",
+                    request_params={"models": "ecmwf_ifs", "year": year},
+                    reason="HISTORY_FORWARD_AFTER_CUTOFF",
+                )
+            else:
+                start_date = min(item["start_date"] for item in valid_window_ranges)
+                end_date = max(item["end_date"] for item in valid_window_ranges)
+                record = fetch_point(
+                    client,
+                    point=point,
+                    source="Open-Meteo",
+                    endpoint=OPEN_METEO_ENDPOINTS["history"],
+                    model="ECMWF IFS 9 km historical weather / analysis",
+                    params=base_weather_params(
+                        point,
+                        models="ecmwf_ifs",
+                        start_date=start_date,
+                        end_date=end_date,
+                    ),
+                    variables=HRES_VARIABLES,
+                    required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
+                    grid_limit_km=HISTORY_GRID_QA_LIMIT_KM,
+                    log_label=f"{core_id}:HISTORY_FORWARD {year}",
+                )
+            record["window_definitions"] = year_windows
+            for key, definition in year_windows.items():
+                record[key] = history_forward_window_summary(record.get("daily", []), definition)
+                if record[key]["status"] == "OK":
+                    log(f"[{core_id}] HISTORY_FORWARD {year} {key} OK")
+                else:
+                    log(f"[{core_id}] HISTORY_FORWARD {year} {key} {record[key]['status']}")
+            if record.get("status") != "PASS":
+                for key, definition in year_windows.items():
+                    if record[key]["status"] == "OK":
+                        record[key]["status"] = "INVALID"
+                        record[key]["usable_for_cross_year_comparison"] = False
+                        record[key]["reason"] = "HISTORY_FORWARD_YEAR_INVALID"
+            years[str(year)] = record
+            year_region_views[str(year)] = compact_history_forward_year(record)
+            all_records.append(record)
+        same_grid_qa = history_forward_same_grid_qa(years)
+        windows_ok = all(
+            all(years[str(year)].get(key, {}).get("status") == "OK" for key in HISTORY_FORWARD_WINDOW_KEYS)
+            for year in HISTORY_FORWARD_YEARS
+        )
+        region_status = "OK" if same_grid_qa["final_status"] == "PASS" and windows_ok else "FAILED"
+        point_results[core_id] = {
+            "point_id": core_id,
+            "point": {
+                "name": point["name"],
+                "region": point["region"],
+                "status": point["status"],
+            },
+            "status": region_status,
+            "usable_for_main_chain": True,
+            "cross_year_comparison_usable": region_status == "OK",
+            "same_grid_qa": same_grid_qa,
+            "years": years,
+        }
+        regions[region_id] = {
+            "region": region_id,
+            "core_point_id": core_id,
+            "status": region_status,
+            "usable_for_main_chain": True,
+            "cross_year_comparison_usable": region_status == "OK",
+            "same_grid_qa": same_grid_qa,
+            "years": year_region_views,
+            "reason": None if region_status == "OK" else "HISTORY_FORWARD_NOT_USABLE",
+        }
+    module_status_value = "OK" if expected_core_regions and all(
+        item.get("status") == "OK"
+        for item in regions.values()
+        if item.get("usable_for_main_chain")
+    ) else "FAILED"
+    return module_header(
+        "history_forward",
+        generated_at,
+        data_date,
+        module_status_value,
+        endpoint=OPEN_METEO_ENDPOINTS["history"],
+        model="ECMWF IFS 9 km historical weather / analysis",
+        model_parameter="ecmwf_ifs",
+        history_years=list(HISTORY_FORWARD_YEARS),
+        forecast_date=forecast_date.isoformat(),
+        anchor_date=forecast_date.isoformat(),
+        cutoff_date=window_definitions[-1]["cutoff_date"],
+        window_definitions=window_definitions,
+        interpretation_boundary="Historical weather after the current calendar date; weather reference only.",
+        points=point_results,
+        regions=regions,
+        excluded_points=excluded_points(config),
+        successful_fetches=sum(record.get("status") == "PASS" for record in all_records),
+        failed_fetches=sum(record.get("status") != "PASS" for record in all_records),
+        expected_fetches=expected_core_regions * len(HISTORY_FORWARD_YEARS),
+    )
+
+
+def failed_history_forward_module(
+    config: dict,
+    generated_at: str,
+    data_date: str,
+    forecast_date: dt.date,
+    error: Exception,
+) -> dict:
+    reason = f"{type(error).__name__}:{error}"
+    return module_header(
+        "history_forward",
+        generated_at,
+        data_date,
+        "FAILED",
+        endpoint=OPEN_METEO_ENDPOINTS["history"],
+        model="ECMWF IFS 9 km historical weather / analysis",
+        model_parameter="ecmwf_ifs",
+        history_years=list(HISTORY_FORWARD_YEARS),
+        forecast_date=forecast_date.isoformat(),
+        anchor_date=forecast_date.isoformat(),
+        cutoff_date=history_forward_window_definitions(forecast_date)[-1]["cutoff_date"],
+        window_definitions=history_forward_window_definitions(forecast_date),
+        interpretation_boundary="Historical weather after the current calendar date; weather reference only.",
+        points={},
+        regions={},
+        excluded_points=excluded_points(config),
+        successful_fetches=0,
+        failed_fetches=0,
+        expected_fetches=sum(
+            1 for region in config.get("regions", {}).values() if region.get("core_point_id")
+        ) * len(HISTORY_FORWARD_YEARS),
+        error=reason,
     )
 
 
@@ -3542,6 +3942,16 @@ def compact_module(name: str, value: dict) -> dict:
             item["years"] = {year: compact_record(record) for year, record in point_result.get("years", {}).items()}
             compact["points"][point_id] = item
         compact["region_summaries"] = copy.deepcopy(value.get("region_summaries", {}))
+    elif name == "history_forward":
+        compact["points"] = {}
+        for point_id, point_result in value.get("points", {}).items():
+            item = copy.deepcopy(point_result)
+            item["years"] = {
+                year: compact_history_forward_year(record)
+                for year, record in point_result.get("years", {}).items()
+            }
+            compact["points"][point_id] = item
+        compact["regions"] = copy.deepcopy(value.get("regions", {}))
     elif name == "ensemble":
         compact["points"] = {}
         for point_id, record in value.get("points", {}).items():
@@ -3601,6 +4011,7 @@ def write_outputs(
     status: dict,
     hres: dict,
     history: dict,
+    history_forward: dict,
     ensemble: dict,
     gfs: dict,
     single_runs: dict,
@@ -3612,6 +4023,7 @@ def write_outputs(
         "status.json": status,
         "hres.json": hres,
         "history_comparison.json": history,
+        "history_forward.json": history_forward,
         "ensemble.json": ensemble,
         "gfs.json": gfs,
         "single_runs.json": single_runs,
@@ -3629,6 +4041,7 @@ def write_outputs(
     raw_values = {
         "hres.json.gz": hres,
         "history_comparison.json.gz": history,
+        "history_forward.json.gz": history_forward,
         "ensemble.json.gz": ensemble,
         "gfs.json.gz": gfs,
         "single_runs.json.gz": single_runs,
@@ -3679,9 +4092,10 @@ def build_status(
 ) -> dict:
     module_names = ("hres", "history", "ensemble", "gfs", "single_runs")
     module_values = {name: modules.get(name, {}).get("status", "FAILED") for name in module_names}
+    history_forward_status = modules.get("history_forward", {}).get("status", "FAILED")
     long_range_status = modules.get("long_range", {}).get("status", "FAILED")
     if all(value == "OK" for value in module_values.values()):
-        pipeline_status = "OK" if long_range_status == "OK" else "PARTIAL"
+        pipeline_status = "OK" if long_range_status == "OK" and history_forward_status == "OK" else "PARTIAL"
     elif modules.get("hres", {}).get("status") == "OK" or modules.get("history", {}).get("status") == "OK":
         pipeline_status = "DEGRADED"
     else:
@@ -3705,6 +4119,7 @@ def build_status(
         "modules": module_values | {
             "spatial_sampling": modules.get("spatial_sampling", {}).get("status", "FAILED"),
             "long_range": long_range_status,
+            "history_forward": history_forward_status,
         },
         "module_details": {
             name: {
@@ -3740,7 +4155,7 @@ def minimal_failure_status(generated_at: str, reason: str) -> dict:
         "generated_at": generated_at,
         "data_date": None,
         "pipeline_status": "FAILED",
-        "modules": {"hres": "FAILED", "history": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED"},
+        "modules": {"hres": "FAILED", "history": "FAILED", "history_forward": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED"},
         "module_details": {"pipeline": {"status": "FAILED", "error": reason}},
         "points": {},
         "route_slots": {},
@@ -3769,31 +4184,49 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
     except Exception as error:
         modules["history"] = failed_module("history", generated_at, data_date, error)
 
-    log("PHASE 3: SPATIAL SAMPLING")
+    log("PHASE 3: HISTORICAL FORWARD PATH")
+    try:
+        modules["history_forward"] = run_history_forward(
+            config,
+            client,
+            generated_at,
+            data_date,
+            now_local.date(),
+        )
+    except Exception as error:
+        modules["history_forward"] = failed_history_forward_module(
+            config,
+            generated_at,
+            data_date,
+            now_local.date(),
+            error,
+        )
+
+    log("PHASE 4: SPATIAL SAMPLING")
     try:
         modules["spatial_sampling"] = run_spatial(config, client, generated_at, data_date, modules["hres"])
     except Exception as error:
         modules["spatial_sampling"] = failed_module("spatial_sampling", generated_at, data_date, error)
 
-    log("PHASE 4: GFS")
+    log("PHASE 5: GFS")
     try:
         modules["gfs"] = run_gfs(config, client, generated_at, data_date)
     except Exception as error:
         modules["gfs"] = failed_module("gfs", generated_at, data_date, error)
 
-    log("PHASE 5: ECMWF ENSEMBLE")
+    log("PHASE 6: ECMWF ENSEMBLE")
     try:
         modules["ensemble"] = run_ensemble(config, client, generated_at, data_date)
     except Exception as error:
         modules["ensemble"] = failed_module("ensemble", generated_at, data_date, error)
 
-    log("PHASE 6: SINGLE RUNS")
+    log("PHASE 7: SINGLE RUNS")
     try:
         modules["single_runs"] = run_single_runs(config, client, generated_at, data_date, now_utc)
     except Exception as error:
         modules["single_runs"] = failed_module("single_runs", generated_at, data_date, error)
 
-    log("PHASE 7: GFS ENSEMBLE LONG RANGE")
+    log("PHASE 8: GFS ENSEMBLE LONG RANGE")
     try:
         modules["long_range"] = run_long_range(config, client, generated_at, data_date, now_local)
     except Exception as error:
@@ -3805,7 +4238,7 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
             artifact_module="long_range_background",
         )
 
-    log("PHASE 8: SUMMARY")
+    log("PHASE 9: SUMMARY")
     try:
         summary = build_summary(
             config,
@@ -3831,7 +4264,7 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
             "interpretation_boundary": "Summary unavailable; inspect status.json and module artifacts.",
         }
     modules["summary"] = {"status": "OK" if "error" not in summary else "FAILED"}
-    log("PHASE 9: EJINA WEATHER NAMESPACE")
+    log("PHASE 10: EJINA WEATHER NAMESPACE")
     try:
         ejina = run_ejina_pipeline(client, generated_at, data_date, now_utc)
     except Exception as error:
@@ -3852,6 +4285,7 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
         status=status,
         hres=modules["hres"],
         history=modules["history"],
+        history_forward=modules["history_forward"],
         ensemble=modules["ensemble"],
         gfs=modules["gfs"],
         single_runs=modules["single_runs"],

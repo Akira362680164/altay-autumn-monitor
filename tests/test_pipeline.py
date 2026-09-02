@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from jsonschema import Draft202012Validator
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -270,6 +272,201 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertTrue(all(item["cell_selection"] == "nearest" for item in requests))
         self.assertTrue(all(item["elevation"] == "nan" for item in requests))
         self.assertTrue(all(item["timezone"] == "Asia/Shanghai" for item in requests))
+
+    def make_history_forward_record(self, point, params, *, grid=None):
+        start = date.fromisoformat(params["start_date"])
+        end = date.fromisoformat(params["end_date"])
+        daily = []
+        cursor = start
+        while cursor <= end:
+            daily.append(self.make_day(cursor.isoformat(), 4))
+            cursor += timedelta(days=1)
+        returned_grid = grid or {
+            "latitude": round(point["latitude"], 6),
+            "longitude": round(point["longitude"], 6),
+        }
+        return {
+            "point_id": point["id"],
+            "point": point,
+            "status": "PASS",
+            "source": "Open-Meteo",
+            "endpoint": pipeline.OPEN_METEO_ENDPOINTS["history"],
+            "model": "ECMWF IFS 9 km historical weather / analysis",
+            "request": {
+                "coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]},
+                "parameters": params,
+            },
+            "response": {
+                "grid_coordinate": returned_grid,
+                "returned_elevation": 1000,
+                "timezone": "Asia/Shanghai",
+            },
+            "qa": {
+                "final_status": "PASS",
+                "grid_distance_km": 0,
+                "grid_distance_limit_km": pipeline.HISTORY_GRID_QA_LIMIT_KM,
+            },
+            "solar_variable": "sunshine_duration",
+            "daily": daily,
+        }
+
+    def test_history_forward_window_boundaries_roll_and_cutoff(self):
+        definitions = pipeline.history_forward_window_definitions(date(2026, 9, 2))
+        self.assertEqual(
+            [(item["window"], item["start_date"], item["end_date"]) for item in definitions],
+            [
+                ("d0_7", "2026-09-02", "2026-09-09"),
+                ("d8_15", "2026-09-10", "2026-09-17"),
+                ("d16_to_10_06", "2026-09-18", "2026-10-06"),
+            ],
+        )
+        translated = pipeline.history_forward_windows_for_year(date(2026, 9, 2), 2023)
+        self.assertEqual(translated["d0_7"]["start_date"], "2023-09-02")
+        self.assertEqual(translated["d16_to_10_06"]["end_date"], "2023-10-06")
+        late = pipeline.history_forward_window_definitions(date(2026, 10, 1))
+        self.assertEqual(late[0]["end_date"], "2026-10-06")
+        self.assertEqual(late[1]["status"], "UNAVAILABLE")
+        self.assertEqual(late[2]["status"], "UNAVAILABLE")
+        for item in late:
+            for field in ("requested_start_date", "requested_end_date", "start_date", "end_date"):
+                if item.get(field):
+                    self.assertLessEqual(item[field], "2026-10-06")
+
+    def test_history_forward_fetches_three_years_core_points_and_clips_cutoff(self):
+        config = pipeline.load_config()
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"])
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            result = pipeline.run_history_forward(
+                config,
+                object(),
+                "2026-09-02T00:00:00Z",
+                "2026-09-01",
+                date(2026, 9, 2),
+            )
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["history_years"], [2023, 2024, 2025])
+        self.assertEqual(result["forecast_date"], "2026-09-02")
+        self.assertEqual(result["expected_fetches"], 9)
+        self.assertEqual(result["successful_fetches"], 9)
+        self.assertEqual(len(requests), 9)
+        self.assertEqual(set(result["points"]), {"B1", "K1", "C1"})
+        for params in requests:
+            self.assertEqual(params["models"], "ecmwf_ifs")
+            self.assertEqual(params["cell_selection"], "nearest")
+            self.assertEqual(params["elevation"], "nan")
+            self.assertEqual(params["timezone"], "Asia/Shanghai")
+            self.assertEqual(params["end_date"][5:], "10-06")
+        for region_id in ("baihaba", "kanas", "keketuohai"):
+            region = result["regions"][region_id]
+            self.assertEqual(region["status"], "OK")
+            self.assertTrue(region["cross_year_comparison_usable"])
+            for year in ("2023", "2024", "2025"):
+                self.assertEqual(region["years"][year]["d0_7"]["start_date"], f"{year}-09-02")
+                self.assertEqual(region["years"][year]["d0_7"]["end_date"], f"{year}-09-09")
+                self.assertEqual(region["years"][year]["d8_15"]["start_date"], f"{year}-09-10")
+                self.assertEqual(region["years"][year]["d8_15"]["end_date"], f"{year}-09-17")
+                self.assertEqual(region["years"][year]["d16_to_10_06"]["end_date"], f"{year}-10-06")
+                self.assertTrue(all(day["date"] <= f"{year}-10-06" for day in region["years"][year]["d16_to_10_06"]["daily"]))
+            self.assertEqual(region["same_grid_qa"]["checked_years"], ["2023", "2024", "2025"])
+            self.assertEqual(region["same_grid_qa"]["final_status"], "PASS")
+        self.assertEqual(result["regions"]["hemu"]["status"], "UNAVAILABLE")
+        self.assertFalse(result["regions"]["hemu"]["usable_for_main_chain"])
+        self.assertNotIn("H1", result["points"])
+
+    def test_history_forward_same_grid_failure_blocks_cross_year_comparison(self):
+        config = pipeline.load_config()
+        def fake_fetch(_client, **kwargs):
+            year = int(kwargs["params"]["start_date"][:4])
+            grid = {"latitude": 48.75, "longitude": 86.75} if year != 2024 else {"latitude": 48.80, "longitude": 86.75}
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"], grid=grid)
+
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            result = pipeline.run_history_forward(
+                config,
+                object(),
+                "2026-09-02T00:00:00Z",
+                "2026-09-01",
+                date(2026, 9, 2),
+            )
+        self.assertEqual(result["status"], "FAILED")
+        point = result["points"]["B1"]
+        self.assertEqual(point["same_grid_qa"]["final_status"], "FAILED")
+        self.assertFalse(point["cross_year_comparison_usable"])
+        self.assertEqual(point["same_grid_qa"]["pairwise"]["2023_vs_2024"], "FAIL")
+        self.assertEqual(result["regions"]["baihaba"]["status"], "FAILED")
+
+    def test_history_forward_status_failure_does_not_hide_short_chain(self):
+        config = pipeline.load_config()
+        modules = {name: {"status": "OK"} for name in ("hres", "history", "ensemble", "gfs", "single_runs", "spatial_sampling")}
+        modules["history_forward"] = {"status": "FAILED", "error": "TEST"}
+        modules["long_range"] = {"status": "OK"}
+        status = pipeline.build_status(config, "2026-09-02T00:00:00Z", "2026-09-01", modules)
+        self.assertEqual(status["pipeline_status"], "PARTIAL")
+        self.assertEqual(status["modules"]["history_forward"], "FAILED")
+        self.assertEqual(status["modules"]["hres"], "OK")
+
+    def test_history_forward_schema_and_weather_only_boundary(self):
+        config = pipeline.load_config()
+        record = self.make_history_forward_record(pipeline.active_points(config)["B1"], {
+            "models": "ecmwf_ifs",
+            "cell_selection": "nearest",
+            "elevation": "nan",
+            "timezone": "Asia/Shanghai",
+            "start_date": "2023-09-02",
+            "end_date": "2023-10-06",
+        })
+        windows = pipeline.history_forward_windows_for_year(date(2026, 9, 2), 2023)
+        for key, definition in windows.items():
+            record[key] = pipeline.history_forward_window_summary(record["daily"], definition)
+        qa = pipeline.history_forward_same_grid_qa({str(year): record for year in (2023, 2024, 2025)})
+        result = pipeline.module_header(
+            "history_forward",
+            "2026-09-02T00:00:00Z",
+            "2026-09-01",
+            "OK",
+            forecast_date="2026-09-02",
+            anchor_date="2026-09-02",
+            cutoff_date="2026-10-06",
+            history_years=[2023, 2024, 2025],
+            window_definitions=pipeline.history_forward_window_definitions(date(2026, 9, 2)),
+            points={"B1": {"point_id": "B1", "status": "OK", "same_grid_qa": qa, "years": {str(year): record for year in (2023, 2024, 2025)}}},
+            regions={"hemu": {"region": "hemu", "status": "UNAVAILABLE", "usable_for_main_chain": False, "cross_year_comparison_usable": False, "same_grid_qa": None, "years": {}}},
+            excluded_points={},
+        )
+        with (ROOT / "schemas" / "history_forward.schema.json").open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        errors = list(Draft202012Validator(schema).iter_errors(result))
+        self.assertEqual(errors, [])
+        text = json.dumps(result, ensure_ascii=False).lower()
+        for forbidden in ("phenology", "autumn", "黄叶", "物候", "旅游", "worth_going"):
+            self.assertNotIn(forbidden, text)
+
+    def test_history_forward_is_written_to_latest_and_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history_forward = {"module": "history_forward", "status": "OK", "points": {}, "regions": {}}
+            with patch.object(pipeline, "LATEST_DIR", root / "latest"), patch.object(pipeline, "ARCHIVE_DIR", root / "archive"):
+                pipeline.write_outputs(
+                    now_local=datetime(2026, 9, 2, 10, tzinfo=pipeline.LOCAL_TZ),
+                    status={},
+                    hres={},
+                    history={},
+                    history_forward=history_forward,
+                    ensemble={},
+                    gfs={},
+                    single_runs={},
+                    spatial={},
+                    long_range={},
+                    summary={},
+                )
+            self.assertTrue((root / "latest" / "history_forward.json").is_file())
+            self.assertTrue((root / "archive" / "2026-09-02" / "history_forward.json").is_file())
+            self.assertTrue((root / "archive" / "2026-09-02" / "raw" / "history_forward.json.gz").is_file())
 
     def test_failed_module_is_explicit_in_status(self):
         config = pipeline.load_config()

@@ -10,6 +10,7 @@
 - summary.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/summary.json>
 - hres.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/hres.json>
 - history_comparison.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/history_comparison.json>
+- history_forward.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/history_forward.json>
 - ensemble.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/ensemble.json>
 - gfs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/gfs.json>
 - single_runs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/single_runs.json>
@@ -110,6 +111,16 @@ max(0, 10 - daily_mean)
 
 `weather_driver_vs_2025.direction` 只允许 `LEADING`、`SYNC`、`LAGGING`、`UNDETERMINED`，表示天气指标相对 2025 的方向，不生成 `actual_phenology_lead_days`。2026-09-01 禾木用户实拍“整体全绿、尚未进入明显黄叶期”仅作为 `manual_phenology_baseline` 元数据，不参与自动天气计算，也不由 Codex 自动识别图片。
 
+### 历史年份同期后续天气路径
+
+`data/latest/history_forward.json` 只在阿勒泰主 namespace 中运行。它以当天 `forecast_date` 为 anchor，调用 Historical Weather API 查询 2023、2024、2025 同一日历节点之后真实发生的天气；2026 仍由现有实时预报链提供，不进入该历史模块。
+
+每个 VERIFIED 核心区域提供 `regions.<region>.years.<year>.d0_7`、`d8_15` 和 `d16_to_10_06` 三个窗口。以 2026-09-02 为例，三个窗口分别是 09-02/09-09、09-10/09-17、09-18/10-06，均包含首尾；日期随每日 anchor 滚动，10-07 及以后永远不请求、不写入输出。窗口同时保留每日温度、降水、降雪、日照和最大阵风，以及窗口统计和前 3 日/后 3 日平均温度变化。
+
+每个核心点的 `same_grid_qa` 会检查 2023、2024、2025 的请求坐标、返回模式格点、返回高程、格点距离、时区、模型和 API request metadata。三年返回格点完全一致且每年 QA 通过时，`cross_year_comparison_usable=true`；任何年份失败、格点不一致或超过现有历史格点距离限制时，点和区域标记为 `FAILED`，不进入跨年比较。禾木没有 VERIFIED core point，保持 `UNAVAILABLE`，不会使用 H1/H2。
+
+该文件只提供历史天气路径证据，不输出物候、秋色或旅游结论。它与 `history_comparison.json` 并行存在，不改变 HRES、ECMWF Ensemble、GFS、Single Runs、Spatial Sampling 或 Long Range 的逻辑；额济纳 namespace 不生成该文件。
+
 ## 空间采样、集合和风雪风险
 
 白哈巴、喀纳斯、可可托海对每个 VERIFIED 核心点请求核心 + N/S/E/W/NE/NW/SE/SW 约 12 km 的同源 HRES 样本；禾木在核心点 VERIFIED 前跳过。程序保存每个请求坐标和返回格点坐标，并按返回格点去重。`requested_samples=9` 不等于 9 个独立模式样本；输出 `unique_model_cells`、重复请求数、核心区温度范围和按日期/唯一格点的 `cold_pool_coverage`，用于区分广泛覆盖与单格点现象。
@@ -157,6 +168,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── summary.json
 │   │   ├── hres.json
 │   │   ├── history_comparison.json
+│   │   ├── history_forward.json
 │   │   ├── ensemble.json
 │   │   ├── gfs.json
 │   │   ├── single_runs.json
@@ -164,10 +176,10 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── long_range.json
 │   │   └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json
 │   └── archive/YYYY-MM-DD/
-│       ├── 同名压缩后的每日 JSON
+│       ├── 同名压缩后的每日 JSON（含 history_forward.json）
 │       ├── raw/*.json.gz
 │       └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json + raw/*.json.gz
-├── schemas/{status,summary,module,long_range,ejina_points,ejina_status,ejina_summary}.schema.json
+├── schemas/{status,summary,module,history_forward,long_range,ejina_points,ejina_status,ejina_summary}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt
@@ -194,7 +206,7 @@ python3.12 src/pipeline.py
 
 1. 读取 `status.json`，确认 `pipeline_status` 和 `modules`；任何 `FAILED` 模块都按缺失证据处理。
 2. 读取 `summary.json`，按 `regions` 的 `visit_date` 映射 10/1 白哈巴、10/2 喀纳斯、10/3 喀纳斯三湾→白哈巴→铁贾公路→契巴罗衣、10/4 禾木、10/5 禾木→阿禾公路→G331→可可托海、10/6 可可托海、10/7 返程。
-3. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层。
+3. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层；需要查看历史同期后续路径时读取 `history_forward.json`，先检查其 `status` 和各区域 `same_grid_qa`。
 4. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
 5. 读取 `long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED` 或 `UNDETERMINED` 时保留不确定性。
 
