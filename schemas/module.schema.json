@@ -5,9 +5,9 @@
   "type": "object",
   "required": ["schema_version", "module", "status", "generated_at", "data_date"],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.0.0"},
-    "module": {"type": "string", "enum": ["hres", "history", "ensemble", "gfs", "single_runs", "spatial_sampling"]},
-    "status": {"type": "string", "enum": ["OK", "FAILED", "SKIPPED"]},
+    "schema_version": {"type": "string", "const": "1.1.0"},
+    "module": {"type": "string", "enum": ["hres", "history", "ensemble", "gfs", "single_runs", "spatial_sampling", "long_range_background"]},
+    "status": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "SKIPPED"]},
     "generated_at": {"type": "string", "format": "date-time"},
     "data_date": {"type": "string", "format": "date"}
   },

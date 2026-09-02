@@ -14,6 +14,7 @@
 - gfs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/gfs.json>
 - single_runs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/single_runs.json>
 - spatial_sampling.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/spatial_sampling.json>
+- long_range.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/long_range.json>
 
 ## 职责边界
 
@@ -30,6 +31,7 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 - [Ensemble API](https://open-meteo.com/en/docs/ensemble-api)：新疆使用全球 `ecmwf_ifs025_ensemble`，约 25 km、51 个成员。
 - [Single Runs API](https://open-meteo.com/en/docs/single-runs-api)：endpoint 为 `https://single-runs-api.open-meteo.com/v1/forecast`，固定 `models=ecmwf_ifs`，比较不同 UTC 初始化 run。
 - [GFS API](https://open-meteo.com/en/docs/gfs-api)：固定 GFS Global 0.11°（约 13 km），只作趋势交叉验证。
+- [Ensemble API](https://open-meteo.com/en/docs/ensemble-api) 与 [官方 Ensemble OpenAPI 注册表](https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml)：16–35 天背景层当前使用全球 GFS Ensemble 0.5°，请求模型 ID 为 `ncep_gefs05`。
 
 所有请求统一使用：
 
@@ -89,6 +91,30 @@ max(0, 10 - daily_mean)
 
 Ensemble 仅对 B1、K1、C1 核心点计算 51 成员的 mean、median、p10、p25、p75、p90、spread，以及夜最低温 `<5℃`、`<2℃`、`<0℃` 的成员支持比例。约 25 km Ensemble 只表达信号稳健性，不能当作村级精确温度，也不与 HRES 简单平均。
 
+## 16–35 Day Long-Range Background
+
+`data/latest/long_range.json` 是新增的长期背景层。当前实际核验的 Open-Meteo GFS Ensemble 配置为：`model_id=ncep_gefs05`、31 个序列（基准/控制序列加 `member01`–`member30`）、全球覆盖、约 0.5°（约 50 km）、原生 3 小时。官方页面当前一方面显示最多 36 天，另一方面参数表仍列 `forecast_days` 为 0–35；本项目用真实接口验证过 `forecast_days=36`，并将返回的本地日期数和非空 lead day 再做 QA。如果接口以后不再接受该请求，模块会写 `FAILED`，不会换用其他天气源。
+
+该层按固定 3 天块聚合为 D16–D18、D19–D21、D22–D24、D25–D27、D28–D30、D31–D33、D34–D35，不在公开长期文件中展示逐小时成员数组。Open-Meteo 可能把集合原生 3 小时序列插值为逐小时数组，因此这些数组只用于内部聚合和审计，不能被解释为逐小时精确预报。
+
+2026-09-02 的真实实跑中，接口返回了 36 个本地日期，但温度非空值只到 D34，D35 窗口被明确写为 `UNAVAILABLE`；降水、降雪和阵风还会有各自更短的非空边界。对应模块状态为 `PARTIAL`，每个变量的 `variable_availability` 会写入 QA。这是接口当前可用边界的记录，不是补值或伪造的 D35 预报。
+
+长期温度方向使用同一点、同一时区和 `ECMWF IFS 9 km historical weather / analysis` 的 `historical_reference`。这是有限的同日期历史参考，不称为 `climatological_normal`，也不是气象站实测。
+
+每个窗口输出集合分布、相对参考方向、集合支持的冷空气/降水/降雪/强风背景信号、粗网格阈值信号和不确定性。`coarse_grid_threshold_signal.usable_for_local_absolute_temperature=false`；0.5° 网格的 `<5℃`、`<2℃`、`<0℃` 只可作背景信号，不能直接证明村级温度或霜冻。`wet_snow_assessment` 仅在粗网格降雪与 `<=2℃` 日最低温重合时标记 `COARSE_POTENTIAL`，不判断当地雪相或积雪量。
+
+GitHub 每日运行会从最近 3–5 次长期摘要中比较同一 `horizon_class`，并标记 `NEW`、`PERSISTENT`、`STRENGTHENING`、`WEAKENING`、`SHIFTING` 或 `DISAPPEARED`。第一次运行没有前序摘要时为 `INSUFFICIENT_HISTORY`。紧凑的长期摘要随每日 archive 保留；包含成员级小时数据的 `raw/long_range.json.gz` 只保留 14 天。
+
+ChatGPT 可以用 16–35 天层提前关注 9 月 15–25 日前后的持续偏冷、冷空气重复、雨雪/湿雪背景、强风背景和集合是否收敛。它不能用这一层给出某日精确最低温或降水量、村级霜冻、实际物候提前/滞后天数，也不能覆盖已经进入 8–15 天窗口的短周期证据。优先级固定为：
+
+```text
+0–7天：ECMWF HRES > ECMWF Ensemble > GFS
+8–15天：ECMWF HRES趋势 + ECMWF Ensemble > GFS
+16–35天：GFS Ensemble background only
+```
+
+如果长期背景层与后续进入 8–15 天的 HRES/ECMWF Ensemble 发生变化，以新的短周期模型为准。长期层也不把强风自动解释为掉叶；`leaf_loss_weather_risk` 仍只是天气事件风险，实际挂叶判断由 ChatGPT 结合实拍和成熟度完成。
+
 GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性，不参与平均，也不直接产生秋色判断。`leaf_loss_weather_risk` 只表达强阵风、湿雪、雨雪和冻结等天气事件风险；9 月 20 日前强风不额外加权，9 月 20 日后才启用季节权重。它不表示树叶一定掉落，实际挂叶风险由 ChatGPT 结合实拍和成熟度判断。
 
 ## 目录和保留策略
@@ -106,18 +132,19 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── ensemble.json
 │   │   ├── gfs.json
 │   │   ├── single_runs.json
-│   │   └── spatial_sampling.json
+│   │   ├── spatial_sampling.json
+│   │   └── long_range.json
 │   └── archive/YYYY-MM-DD/
 │       ├── 同名压缩后的每日 JSON
 │       └── raw/*.json.gz
-├── schemas/{status,summary,module}.schema.json
+├── schemas/{status,summary,module,long_range}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt
 └── README.md
 ```
 
-`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照长期保留。Schema 版本目前为 `1.0.0`；兼容性新增字段可以向后兼容地追加，破坏性变更必须升级版本并同步更新 Schema、测试和 README。
+`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照长期保留。Schema 版本目前为 `1.1.0`。这是对 v1.0.0 的兼容性新增：已有字段和模块语义保持不变，新增 `long_range_background` 模块及 summary 的 `forecast_16_35d` 字段。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
 
 ## GitHub Actions 和本地运行
 
@@ -137,8 +164,8 @@ python3.12 src/pipeline.py
 
 1. 读取 `status.json`，确认 `pipeline_status` 和 `modules`；任何 `FAILED` 模块都按缺失证据处理。
 2. 读取 `summary.json`，按 `regions` 的 `visit_date` 映射 10/1 白哈巴、10/2 喀纳斯、10/3 喀纳斯三湾→白哈巴→铁贾公路→契巴罗衣、10/4 禾木、10/5 禾木→阿禾公路→G331→可可托海、10/6 可可托海、10/7 返程。
-3. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据。
+3. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层。
 4. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
-5. 读取 `hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED` 或 `UNDETERMINED` 时保留不确定性。
+5. 读取 `long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED` 或 `UNDETERMINED` 时保留不确定性。
 
-当前 v1.0.0 的 Schema 已覆盖本任务要求，不需要 ChatGPT 额外配合调整。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。
+当前 v1.1.0 Schema 已覆盖长期背景层。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。

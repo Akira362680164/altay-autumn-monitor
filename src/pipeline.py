@@ -35,9 +35,11 @@ ARCHIVE_DIR = ROOT / "data" / "archive"
 TIMEZONE_NAME = "Asia/Shanghai"
 LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
 UTC = dt.timezone.utc
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+LEGACY_SCHEMA_VERSION = "1.0.0"
 RAW_RETENTION_DAYS = 14
 HRES_GRID_QA_LIMIT_KM = 14.0
+LONG_RANGE_GRID_QA_LIMIT_KM = 35.0
 
 OPEN_METEO_ENDPOINTS = {
     "hres": "https://api.open-meteo.com/v1/ecmwf",
@@ -65,6 +67,15 @@ HRES_VARIABLES = [
 ]
 HRES_FALLBACK_SOLAR = "shortwave_radiation"
 ENSEMBLE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gusts_10m"]
+LONG_RANGE_MODEL_ID = "ncep_gefs05"
+LONG_RANGE_MODEL = "GFS Ensemble 0.5°"
+LONG_RANGE_ENSEMBLE_MEMBERS = 31
+LONG_RANGE_REQUESTED_FORECAST_DAYS = 36
+LONG_RANGE_LEAD_START = 16
+LONG_RANGE_LEAD_END = 35
+LONG_RANGE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gusts_10m"]
+LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
+LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
 CORE_REGION_IDS = ("baihaba", "kanas", "keketuohai")
 THRESHOLDS_C = (10.0, 5.0, 2.0, 0.0)
 
@@ -156,7 +167,7 @@ def load_config() -> dict:
         config = json.load(handle)
     if config.get("timezone") != TIMEZONE_NAME:
         raise ValueError(f"config timezone must be {TIMEZONE_NAME}")
-    if config.get("schema_version") != SCHEMA_VERSION:
+    if config.get("schema_version") not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
         raise ValueError("unsupported points schema version")
     return config
 
@@ -229,7 +240,7 @@ class ApiClient:
         last_error: OpenMeteoError | None = None
         for attempt in range(1, self.retries + 1):
             try:
-                request = Request(url, headers={"Accept": "application/json", "User-Agent": "altay-autumn-monitor/1.0"})
+                request = Request(url, headers={"Accept": "application/json", "User-Agent": "altay-autumn-monitor/1.1"})
                 with urlopen(request, timeout=self.timeout_seconds, context=self.ssl_context) as response:
                     body = response.read().decode("utf-8")
                 payload = json.loads(body)
@@ -314,6 +325,13 @@ def _values_for_indices(hourly: dict, key: str, indices: list[int]) -> list[floa
     return result
 
 
+def _complete_values_for_indices(hourly: dict, key: str, indices: list[int]) -> list[float]:
+    values = hourly.get(key)
+    if not isinstance(values, list) or any(index >= len(values) or values[index] is None for index in indices):
+        return []
+    return [float(values[index]) for index in indices]
+
+
 def safe_mean(values: list[float]) -> float | None:
     return round(mean(values), 3) if values else None
 
@@ -371,10 +389,9 @@ def daily_metrics(hourly: dict, solar_variable: str | None = None) -> list[dict]
     return output
 
 
-def trim_incomplete_edge_rows(payload: dict, required_variables: list[str]) -> tuple[dict, dict]:
-    """Keep only a complete interior; retain an audit of omitted API edge rows."""
-    output = copy.deepcopy(payload)
-    output_hourly = output.get("hourly") or {}
+def trim_incomplete_hourly_rows(hourly: dict, required_variables: list[str]) -> tuple[dict, dict]:
+    """Keep only a complete hourly interior; retain an audit of omitted edge rows."""
+    output_hourly = copy.deepcopy(hourly)
     times = output_hourly.get("time") if isinstance(output_hourly.get("time"), list) else []
     original_count = len(times)
     leading_count = 0
@@ -422,6 +439,13 @@ def trim_incomplete_edge_rows(payload: dict, required_variables: list[str]) -> t
         "trailing_missing_variables": sorted(tail_variables),
         "horizon_status": "TRUNCATED_EDGE_MISSING" if leading_count or trim_count else "COMPLETE",
     }
+    return output_hourly, audit
+
+
+def trim_incomplete_edge_rows(payload: dict, required_variables: list[str]) -> tuple[dict, dict]:
+    """Trim API edge rows while preserving the rest of the response metadata."""
+    output = copy.deepcopy(payload)
+    output["hourly"], audit = trim_incomplete_hourly_rows(output.get("hourly") or {}, required_variables)
     return output, audit
 
 
@@ -435,6 +459,8 @@ def response_meta(payload: dict) -> dict:
         "timezone": payload.get("timezone"),
         "utc_offset_seconds": payload.get("utc_offset_seconds"),
         "generationtime_ms": payload.get("generationtime_ms"),
+        "returned_model": payload.get("model"),
+        "returned_model_id": payload.get("model_id"),
         "model_run_initialization": payload.get("model_run_initialization"),
     }
 
@@ -447,6 +473,8 @@ def validate_payload(
     grid_limit_km: float,
     requested_elevation: str = "nan",
     model_run_initialization: str | None = None,
+    accepted_model_values: tuple[str, ...] = (),
+    accepted_model_ids: tuple[str, ...] = (),
 ) -> dict:
     response = response_meta(payload)
     grid = response["grid_coordinate"]
@@ -467,7 +495,12 @@ def validate_payload(
     coordinate_pass = valid_coordinate(point["latitude"], point["longitude"]) and valid_coordinate(grid.get("latitude"), grid.get("longitude"))
     timezone_pass = payload.get("timezone") == TIMEZONE_NAME and payload.get("utc_offset_seconds") == 28800
     returned_model = payload.get("model")
-    model_pass = returned_model is None or str(returned_model).lower() == expected_model.lower()
+    accepted_models = {expected_model.lower(), *(value.lower() for value in accepted_model_values)}
+    model_pass = returned_model is None or str(returned_model).lower() in accepted_models
+    returned_model_id = payload.get("model_id")
+    model_id_pass = not returned_model_id or not accepted_model_ids or str(returned_model_id).lower() in {
+        value.lower() for value in accepted_model_ids
+    }
     elevation_pass = requested_elevation == "nan"
     data_pass = bool(times) and not missing_variables and not length_mismatch and not null_values
     checks = {
@@ -475,6 +508,7 @@ def validate_payload(
         "distance_check": "PASS" if distance_pass else "FAIL",
         "timezone_check": "PASS" if timezone_pass else "FAIL",
         "model_check": "PASS" if model_pass else "FAIL",
+        "model_id_check": "PASS" if model_id_pass else "FAIL",
         "elevation_check": "PASS" if elevation_pass else "FAIL",
         "data_check": "PASS" if data_pass else "FAIL",
     }
@@ -490,6 +524,8 @@ def validate_payload(
             reasons.append("TIMEZONE_MISMATCH")
         if not model_pass:
             reasons.append("MODEL_MISMATCH")
+        if not model_id_pass:
+            reasons.append("MODEL_ID_MISMATCH")
         if missing_variables:
             reasons.append("MISSING_DATA:" + ",".join(missing_variables))
         if length_mismatch:
@@ -504,6 +540,7 @@ def validate_payload(
         "distance_check": checks["distance_check"],
         "timezone_check": checks["timezone_check"],
         "model_check": checks["model_check"],
+        "model_id_check": checks["model_id_check"],
         "coordinate_check": checks["coordinate_check"],
         "elevation_check": checks["elevation_check"],
         "elevation_mode": "native_model_grid" if requested_elevation == "nan" else "requested_elevation",
@@ -597,6 +634,8 @@ def fetch_point(
     log_label: str,
     precision_module: str | None = None,
     model_run_initialization: str | None = None,
+    accepted_model_values: tuple[str, ...] = (),
+    accepted_model_ids: tuple[str, ...] = (),
 ) -> dict:
     try:
         payload, url, solar_variable = request_payload(
@@ -628,6 +667,8 @@ def fetch_point(
         grid_limit_km=grid_limit_km,
         requested_elevation=str(params.get("elevation", "")),
         model_run_initialization=model_run_initialization,
+        accepted_model_values=accepted_model_values,
+        accepted_model_ids=accepted_model_ids,
     )
     qa.update(completeness)
     response = response_meta(payload)
@@ -1285,25 +1326,32 @@ def percentile(values: list[float], probability: float) -> float | None:
 
 
 def ensemble_statistics(values: list[float]) -> dict:
+    p25 = percentile(values, 0.25)
+    p75 = percentile(values, 0.75)
     return {
         "mean": round(mean(values), 3) if values else None,
         "median": round(median(values), 3) if values else None,
         "p10": percentile(values, 0.10),
-        "p25": percentile(values, 0.25),
-        "p75": percentile(values, 0.75),
+        "p25": p25,
+        "p75": p75,
         "p90": percentile(values, 0.90),
+        "interquartile_spread": round(p75 - p25, 3) if p25 is not None and p75 is not None else None,
         "spread": round(percentile(values, 0.90) - percentile(values, 0.10), 3)
         if values
         else None,
     }
 
 
-def ensemble_series_keys(hourly: dict, variable: str) -> list[str]:
+def member_series_keys(hourly: dict, variable: str) -> list[str]:
     member_keys = sorted(
         (key for key in hourly if re.fullmatch(re.escape(variable) + r"_member\d{2}", key)),
         key=lambda key: int(key.rsplit("member", 1)[1]),
     )
-    return [variable, *member_keys]
+    return member_keys
+
+
+def ensemble_series_keys(hourly: dict, variable: str) -> list[str]:
+    return [variable, *member_series_keys(hourly, variable)]
 
 
 def ensemble_daily_distributions(hourly: dict) -> dict:
@@ -1431,6 +1479,920 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
         excluded_points=excluded_points(config),
         successful_points=sum(record.get("status") == "PASS" for record in values),
         failed_points=sum(record.get("status") != "PASS" for record in values),
+    )
+
+
+LONG_RANGE_SIGNAL_ORDER = ("NONE", "WEAK", "MODERATE", "STRONG")
+LONG_RANGE_UNCERTAINTY_ORDER = ("LOW", "MODERATE", "HIGH", "VERY_HIGH")
+
+
+def long_range_window_definitions() -> list[tuple[int, int]]:
+    windows = []
+    start = LONG_RANGE_LEAD_START
+    while start <= LONG_RANGE_LEAD_END:
+        end = min(start + 2, LONG_RANGE_LEAD_END)
+        windows.append((start, end))
+        start = end + 1
+    return windows
+
+
+def validate_long_range_members(record: dict) -> tuple[bool, dict]:
+    hourly = record.get("hourly") or {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    series_by_variable = {}
+    variable_availability = {}
+    missing_or_wrong_count = []
+    array_length_mismatch = []
+    null_data_series = []
+    member_counts = {}
+    for variable in LONG_RANGE_VARIABLES:
+        keys = ensemble_series_keys(hourly, variable)
+        series_by_variable[variable] = keys
+        member_counts[variable] = len(keys)
+        if len(keys) != LONG_RANGE_ENSEMBLE_MEMBERS:
+            missing_or_wrong_count.append(
+                f"{variable}:expected_{LONG_RANGE_ENSEMBLE_MEMBERS}_got_{len(keys)}"
+            )
+        first_indices = []
+        last_indices = []
+        for key in keys:
+            values = hourly.get(key)
+            if not isinstance(values, list) or len(values) != len(times):
+                array_length_mismatch.append(key)
+                continue
+            non_null_indices = [index for index, value in enumerate(values) if value is not None]
+            if not non_null_indices:
+                null_data_series.append(key)
+                continue
+            first_index = non_null_indices[0]
+            last_index = non_null_indices[-1]
+            first_indices.append(first_index)
+            last_indices.append(last_index)
+            if any(value is None for value in values[first_index : last_index + 1]):
+                null_data_series.append(key)
+        if first_indices and last_indices:
+            first_common = max(first_indices)
+            last_common = min(last_indices)
+            variable_availability[variable] = {
+                "first_timestamp": times[first_common],
+                "last_timestamp": times[last_common],
+                "first_complete_index": first_common,
+                "last_complete_index": last_common,
+                "all_members_complete_through_index": last_common,
+                "edge_truncated": first_common > 0 or last_common < len(times) - 1,
+            }
+        else:
+            variable_availability[variable] = {
+                "first_timestamp": None,
+                "last_timestamp": None,
+                "first_complete_index": None,
+                "last_complete_index": None,
+                "all_members_complete_through_index": None,
+                "edge_truncated": False,
+            }
+    valid = bool(times) and not missing_or_wrong_count and not array_length_mismatch and not null_data_series
+    return valid, {
+        "status": "PASS" if valid else "FAIL",
+        "expected_members": LONG_RANGE_ENSEMBLE_MEMBERS,
+        "actual_member_counts_by_variable": member_counts,
+        "series_by_variable": series_by_variable,
+        "variable_availability": variable_availability,
+        "edge_truncated_variables": [
+            variable for variable, item in variable_availability.items() if item["edge_truncated"]
+        ],
+        "missing_or_wrong_count": missing_or_wrong_count,
+        "array_length_mismatch": array_length_mismatch,
+        "null_data_series": null_data_series,
+    }
+
+
+def trim_long_range_member_edges(record: dict) -> dict:
+    hourly = record.get("hourly") or {}
+    times = hourly.get("time") or []
+    audit = {}
+    for variable in LONG_RANGE_VARIABLES:
+        keys = ensemble_series_keys(hourly, variable)
+        bounds = []
+        for key in keys:
+            values = hourly.get(key) or []
+            non_null = [index for index, value in enumerate(values) if value is not None]
+            if non_null:
+                bounds.append((non_null[0], non_null[-1]))
+        first_common = max((item[0] for item in bounds), default=None)
+        last_common = min((item[1] for item in bounds), default=None)
+        audit[variable] = {
+            "series_count": len(keys),
+            "original_timestep_count": len(times),
+            "all_members_first_complete_timestamp": times[first_common] if first_common is not None and first_common < len(times) else None,
+            "all_members_last_complete_timestamp": times[last_common] if last_common is not None and last_common < len(times) else None,
+            "leading_missing_rows": first_common or 0 if first_common is not None else None,
+            "trailing_missing_rows": len(times) - 1 - last_common if last_common is not None else None,
+            "horizon_status": "TRUNCATED_EDGE_MISSING" if first_common not in {None, 0} or last_common not in {None, len(times) - 1} else "COMPLETE",
+        }
+    record.setdefault("response", {}).update({"member_edge_audit": audit})
+    record.setdefault("qa", {})["member_edge_audit"] = audit
+    record["daily"] = daily_metrics(hourly)
+    return record
+
+
+def long_range_daily_member_values(hourly: dict) -> tuple[dt.date, dict[int, dict[str, dict]]]:
+    times = hourly.get("time") or []
+    if not times:
+        raise ValueError("long-range hourly time is empty")
+    origin_date = parse_local_api_time(times[0]).date()
+    groups: dict[str, list[int]] = {}
+    for index, value in enumerate(times):
+        day = parse_local_api_time(value).date().isoformat()
+        groups.setdefault(day, []).append(index)
+    temperature_keys = ensemble_series_keys(hourly, "temperature_2m")
+    daily_by_lead: dict[int, dict[str, dict]] = {}
+    for day, indices in sorted(groups.items()):
+        day_date = dt.date.fromisoformat(day)
+        lead_day = (day_date - origin_date).days
+        daily_by_lead[lead_day] = {}
+        for key in temperature_keys:
+            temperatures = _complete_values_for_indices(hourly, key, indices)
+            suffix = key.removeprefix("temperature_2m")
+            precipitation = _complete_values_for_indices(hourly, f"precipitation{suffix}", indices)
+            snowfall = _complete_values_for_indices(hourly, f"snowfall{suffix}", indices)
+            gusts = _complete_values_for_indices(hourly, f"wind_gusts_10m{suffix}", indices)
+            if not temperatures:
+                continue
+            daily_by_lead[lead_day][key] = {
+                "date": day,
+                "temperature_mean_c": round(mean(temperatures), 3),
+                "temperature_min_c": round(min(temperatures), 3),
+                "precipitation_mm": round(sum(precipitation), 3) if precipitation else None,
+                "snowfall_cm": round(sum(snowfall), 3) if snowfall else None,
+                "wind_gust_max_kmh": round(max(gusts), 3) if gusts else None,
+            }
+    return origin_date, daily_by_lead
+
+
+def long_range_horizon_check(daily_by_lead: dict[int, dict[str, dict]]) -> dict:
+    leads = sorted(daily_by_lead)
+    expected = list(range(0, LONG_RANGE_LEAD_END + 1))
+    contiguous = leads == list(range(leads[0], leads[-1] + 1)) if leads else False
+    usable_background = bool(leads) and leads[0] == 0 and contiguous and leads[-1] >= LONG_RANGE_LEAD_START
+    status = "PASS" if leads == expected and all(daily_by_lead[lead] for lead in expected) else "PARTIAL" if usable_background else "FAIL"
+    return {
+        "status": status,
+        "expected_lead_day_range": [0, LONG_RANGE_LEAD_END],
+        "actual_lead_day_range": [leads[0], leads[-1]] if leads else None,
+        "actual_lead_days": len(leads),
+        "contiguous": contiguous,
+        "usable_background_through_lead_day": leads[-1] if usable_background else None,
+        "missing_lead_days": [lead for lead in expected if lead not in daily_by_lead],
+    }
+
+
+def long_range_member_window_values(
+    daily_by_lead: dict[int, dict[str, dict]],
+    start_lead: int,
+    end_lead: int,
+) -> dict[str, dict[str, object]]:
+    leads = list(range(start_lead, end_lead + 1))
+    member_keys = sorted({key for lead in leads for key in daily_by_lead.get(lead, {})})
+    values = {}
+    for member_key in member_keys:
+        days = [daily_by_lead.get(lead, {}).get(member_key) for lead in leads]
+        if any(day is None for day in days):
+            continue
+        def complete_metric(key: str, operation: str) -> float | None:
+            metric_values = [day.get(key) for day in days]
+            if any(value is None for value in metric_values):
+                return None
+            if operation == "sum":
+                return round(sum(metric_values), 3)
+            return round(max(metric_values), 3)
+
+        values[member_key] = {
+            "temperature_mean_c": round(mean(day["temperature_mean_c"] for day in days), 3),
+            "temperature_min_c": round(min(day["temperature_min_c"] for day in days), 3),
+            "precipitation_mm": complete_metric("precipitation_mm", "sum"),
+            "snowfall_cm": complete_metric("snowfall_cm", "sum"),
+            "wind_gust_max_kmh": complete_metric("wind_gust_max_kmh", "max"),
+        }
+    return values
+
+
+def signal_from_support(support: float | None) -> str:
+    if support is None:
+        return "UNDETERMINED"
+    if support >= 0.7:
+        return "STRONG"
+    if support >= 0.4:
+        return "MODERATE"
+    if support >= 0.2:
+        return "WEAK"
+    return "NONE"
+
+
+def support_for_window_metric(
+    member_values: dict[str, dict[str, object]],
+    key: str,
+    predicate,
+) -> tuple[float | None, int]:
+    available = [item.get(key) for item in member_values.values() if item.get(key) is not None]
+    if not available:
+        return None, 0
+    return round(sum(predicate(float(value)) for value in available) / len(available), 3), len(available)
+
+
+def temperature_background(temperature_stats: dict, reference_mean: float | None) -> dict:
+    if reference_mean is None or temperature_stats.get("mean") is None:
+        return {
+            "direction": "UNDETERMINED",
+            "strength": "WEAK",
+            "reference_status": "UNAVAILABLE",
+        }
+    delta = float(temperature_stats["mean"]) - reference_mean
+    if abs(delta) < 0.5:
+        direction = "NEAR_REFERENCE"
+    elif delta < 0:
+        direction = "COLDER_THAN_REFERENCE"
+    else:
+        direction = "WARMER_THAN_REFERENCE"
+    strength = "STRONG" if abs(delta) >= 3 else "MODERATE" if abs(delta) >= 1.5 else "WEAK"
+    return {
+        "direction": direction,
+        "strength": strength,
+        "reference_status": "PASS",
+    }
+
+
+def long_range_temperature_stats(member_values: dict[str, dict[str, object]]) -> dict:
+    values = [float(item["temperature_mean_c"]) for item in member_values.values()]
+    return ensemble_statistics(values)
+
+
+def long_range_cold_window_signal(
+    current_values: dict[str, dict[str, object]],
+    previous_values: dict[str, dict[str, object]],
+    start_date: str,
+    end_date: str,
+) -> tuple[dict, dict]:
+    common_members = sorted(set(current_values) & set(previous_values))
+    if not common_members:
+        return (
+            {
+                "signal": "UNDETERMINED",
+                "window": f"{start_date}/{end_date}",
+                "member_support": None,
+                "persistence_runs": 0,
+            },
+            {"status": "NO_ROBUST_SIGNAL", "reason": "NO_PREVIOUS_WINDOW_DATA"},
+        )
+    changes = [
+        float(current_values[key]["temperature_mean_c"])
+        - float(previous_values[key]["temperature_mean_c"])
+        for key in common_members
+    ]
+    member_support = sum(change <= -1.0 for change in changes) / len(changes)
+    current_stats = long_range_temperature_stats({key: current_values[key] for key in common_members})
+    previous_stats = long_range_temperature_stats({key: previous_values[key] for key in common_members})
+    mean_change = current_stats["mean"] - previous_stats["mean"]
+    median_change = current_stats["median"] - previous_stats["median"]
+    spread = current_stats["spread"] or 0
+    if mean_change <= -3 and median_change <= -2 and member_support >= 0.7 and spread <= 8:
+        signal = "STRONG"
+    elif mean_change <= -1.5 and median_change <= -1 and member_support >= 0.6 and spread <= 10:
+        signal = "MODERATE"
+    elif mean_change <= -0.8 and member_support >= 0.5 and spread <= 12:
+        signal = "WEAK"
+    else:
+        signal = "NONE"
+    return (
+        {
+            "signal": signal,
+            "window": f"{start_date}/{end_date}",
+            "member_support": round(member_support, 3),
+            "persistence_runs": 0,
+        },
+        {
+            "status": "ASSESSED",
+            "mean_change_c": round(mean_change, 3),
+            "median_change_c": round(median_change, 3),
+            "spread_c": spread,
+            "member_count": len(common_members),
+        },
+    )
+
+
+def long_range_uncertainty(
+    temperature_stats: dict,
+    event_supports: list[float | None],
+    start_lead: int,
+) -> tuple[str, list[str]]:
+    level = 0
+    drivers = []
+    spread = temperature_stats.get("spread")
+    if spread is None:
+        level = 3
+        drivers.append("temperature_spread_unavailable")
+    elif spread > 10:
+        level = max(level, 3)
+        drivers.append("temperature_spread")
+    elif spread > 7:
+        level = max(level, 2)
+        drivers.append("temperature_spread")
+    elif spread > 4:
+        level = max(level, 1)
+        drivers.append("temperature_spread")
+    disagreement = [support for support in event_supports if support is not None and 0.25 <= support <= 0.75]
+    if disagreement:
+        level = max(level, 2)
+        drivers.append("member_event_disagreement")
+    if any(support is None for support in event_supports):
+        level = max(level, 2)
+        drivers.append("event_variable_horizon")
+    if start_lead >= 28:
+        level = max(level, 2)
+        drivers.append("longer_lead_time")
+    if not drivers:
+        drivers.append("long_range_horizon")
+    return LONG_RANGE_UNCERTAINTY_ORDER[level], drivers
+
+
+def reference_mean_for_window(
+    reference_days: dict[str, dict],
+    origin_date: dt.date,
+    start_lead: int,
+    end_lead: int,
+) -> tuple[float | None, int]:
+    values = []
+    for lead in range(start_lead, end_lead + 1):
+        target = origin_date + dt.timedelta(days=lead)
+        reference = reference_days.get(f"2025-{target.month:02d}-{target.day:02d}")
+        if reference and reference.get("complete") and metric_value(reference, "temperature_mean_c") is not None:
+            values.append(metric_value(reference, "temperature_mean_c"))
+    return (round(mean(values), 3), len(values)) if values else (None, 0)
+
+
+def build_long_range_windows(
+    origin_date: dt.date,
+    daily_by_lead: dict[int, dict[str, dict]],
+    reference_days: dict[str, dict],
+) -> list[dict]:
+    windows = []
+    for start_lead, end_lead in long_range_window_definitions():
+        current_values = long_range_member_window_values(daily_by_lead, start_lead, end_lead)
+        start_date = origin_date + dt.timedelta(days=start_lead)
+        end_date = origin_date + dt.timedelta(days=end_lead)
+        if not current_values:
+            windows.append({
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "horizon_class": f"D{start_lead}_D{end_lead}",
+                "confidence": "VERY_LOW",
+                "status": "UNAVAILABLE",
+                "reason": "WINDOW_DATA_MISSING",
+            })
+            continue
+        temperature_stats = long_range_temperature_stats(current_values)
+        reference_mean, reference_days_available = reference_mean_for_window(
+            reference_days, origin_date, start_lead, end_lead
+        )
+        previous_values = long_range_member_window_values(daily_by_lead, start_lead - 3, start_lead - 1)
+        cold_signal, cold_diagnostics = long_range_cold_window_signal(
+            current_values,
+            previous_values,
+            start_date.isoformat(),
+            end_date.isoformat(),
+        )
+        precipitation_support, precipitation_members = support_for_window_metric(
+            current_values,
+            "precipitation_mm",
+            lambda value: value >= 1,
+        )
+        snowfall_support, snowfall_members = support_for_window_metric(
+            current_values,
+            "snowfall_cm",
+            lambda value: value > 0.1,
+        )
+        wind_support, wind_members = support_for_window_metric(
+            current_values,
+            "wind_gust_max_kmh",
+            lambda value: value >= 50,
+        )
+        wet_snow_values = [
+            item
+            for item in current_values.values()
+            if item.get("snowfall_cm") is not None and item.get("temperature_min_c") is not None
+        ]
+        wet_snow_members = len(wet_snow_values)
+        wet_snow_support = (
+            round(
+                sum(
+                    float(item["snowfall_cm"]) > 0.1 and float(item["temperature_min_c"]) <= 2
+                    for item in wet_snow_values
+                ) / wet_snow_members,
+                3,
+            )
+            if wet_snow_values
+            else None
+        )
+        coarse_thresholds = {}
+        for threshold in (5.0, 2.0, 0.0):
+            support = sum(
+                float(item["temperature_min_c"]) < threshold
+                for item in current_values.values()
+            ) / len(current_values)
+            coarse_thresholds[f"below_{int(threshold)}c"] = {
+                "member_support": round(support, 3),
+                "threshold_c": threshold,
+                "definition": "at least one coarse-grid daily minimum in this 3-day window",
+            }
+        uncertainty, uncertainty_drivers = long_range_uncertainty(
+            temperature_stats,
+            [precipitation_support, snowfall_support, wind_support, wet_snow_support],
+            start_lead,
+        )
+        confidence = "VERY_LOW" if uncertainty in {"HIGH", "VERY_HIGH"} or start_lead >= 28 else "LOW"
+        windows.append({
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "horizon_class": f"D{start_lead}_D{end_lead}",
+            "confidence": confidence,
+            "status": "OK",
+            "temperature_distribution_c": temperature_stats,
+            "temperature_background": temperature_background(temperature_stats, reference_mean),
+            "historical_reference": {
+                "kind": "historical_reference",
+                "model": "ECMWF IFS 9 km historical weather / analysis",
+                "mean_temperature_c": reference_mean,
+                "days_available": reference_days_available,
+            },
+            "cold_window_signal": cold_signal,
+            "precipitation_background": {
+                "signal": signal_from_support(precipitation_support),
+                "member_support": precipitation_support,
+                "available_members": precipitation_members,
+                "threshold": "window precipitation total >= 1 mm",
+            },
+            "snow_background": {
+                "signal": signal_from_support(snowfall_support),
+                "member_support": snowfall_support,
+                "available_members": snowfall_members,
+                "threshold": "window snowfall total > 0.1 cm",
+            },
+            "wet_snow_assessment": {
+                "status": "UNAVAILABLE" if wet_snow_support is None else "COARSE_POTENTIAL" if wet_snow_support else "NO_SIGNAL",
+                "member_support": wet_snow_support,
+                "available_members": wet_snow_members,
+                "reason": "coarse 0.5 degree member overlap of snowfall and <=2C daily minimum; not local phase certainty",
+            },
+            "coarse_grid_threshold_signal": {
+                "usable_for_local_absolute_temperature": False,
+                "thresholds": coarse_thresholds,
+                "reason": "0.5 degree ensemble grid cannot represent village-level absolute temperature",
+            },
+            "strong_wind_background": {
+                "signal": signal_from_support(wind_support),
+                "member_support": wind_support,
+                "available_members": wind_members,
+                "threshold": "window maximum gust >= 50 km/h",
+            },
+            "forecast_uncertainty": uncertainty,
+            "uncertainty_drivers": uncertainty_drivers,
+            "diagnostics": {
+                "cold_window": cold_diagnostics,
+                "member_count": len(current_values),
+            },
+            "signal_evolution": {
+                "status": "INSUFFICIENT_HISTORY",
+                "runs_seen": 0,
+                "trend": "UNDETERMINED",
+            },
+        })
+    return windows
+
+
+def load_long_range_snapshots(current_date: dt.date, limit: int = 5) -> list[dict]:
+    snapshots = []
+    if not ARCHIVE_DIR.exists():
+        return snapshots
+    for path in ARCHIVE_DIR.glob("*/long_range.json"):
+        try:
+            archive_date = dt.date.fromisoformat(path.parent.name)
+        except ValueError:
+            continue
+        if archive_date >= current_date:
+            continue
+        try:
+            with path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if value.get("status") in {"OK", "PARTIAL"}:
+            snapshots.append(value)
+    snapshots.sort(key=lambda value: value.get("generated_at", ""), reverse=True)
+    return snapshots[:limit]
+
+
+def apply_signal_evolution(region_id: str, windows: list[dict], snapshots: list[dict]) -> list[dict]:
+    for window in windows:
+        if window.get("status") == "UNAVAILABLE" or "cold_window_signal" not in window:
+            window["signal_evolution"] = {
+                "status": "INSUFFICIENT_HISTORY",
+                "runs_seen": 0,
+                "trend": "UNDETERMINED",
+            }
+            continue
+        current_signal = window.get("cold_window_signal", {}).get("signal")
+        matches = []
+        for snapshot in snapshots:
+            region = (snapshot.get("regions") or {}).get(region_id) or {}
+            match = next(
+                (item for item in region.get("windows", []) if item.get("horizon_class") == window.get("horizon_class")),
+                None,
+            )
+            if match:
+                matches.append(match)
+        previous_signals = [item.get("cold_window_signal", {}).get("signal") for item in matches]
+        previous_signal = previous_signals[0] if previous_signals else None
+        persistence_runs = 1 if current_signal in {"WEAK", "MODERATE", "STRONG"} else 0
+        for signal in previous_signals:
+            if signal in {"WEAK", "MODERATE", "STRONG"} and persistence_runs:
+                persistence_runs += 1
+            else:
+                break
+        if not matches:
+            evolution_status = "INSUFFICIENT_HISTORY"
+            trend = "UNDETERMINED"
+        elif current_signal == "NONE" and previous_signal in {"WEAK", "MODERATE", "STRONG"}:
+            evolution_status = "DISAPPEARED"
+            trend = "WEAKENING"
+        elif current_signal in {"WEAK", "MODERATE", "STRONG"} and previous_signal not in {"WEAK", "MODERATE", "STRONG"}:
+            evolution_status = "NEW"
+            trend = "STRENGTHENING"
+        elif current_signal not in LONG_RANGE_SIGNAL_ORDER or previous_signal not in LONG_RANGE_SIGNAL_ORDER:
+            evolution_status = "INSUFFICIENT_HISTORY"
+            trend = "UNDETERMINED"
+        else:
+            current_rank = LONG_RANGE_SIGNAL_ORDER.index(current_signal) if current_signal in LONG_RANGE_SIGNAL_ORDER else 0
+            previous_rank = LONG_RANGE_SIGNAL_ORDER.index(previous_signal) if previous_signal in LONG_RANGE_SIGNAL_ORDER else 0
+            current_start = dt.date.fromisoformat(window["start_date"])
+            previous_start = dt.date.fromisoformat(matches[0]["start_date"])
+            if abs((current_start - previous_start).days) > 1:
+                evolution_status = "SHIFTING"
+                trend = "SHIFTING"
+            elif current_rank > previous_rank:
+                evolution_status = "STRENGTHENING"
+                trend = "STRENGTHENING"
+            elif current_rank < previous_rank:
+                evolution_status = "WEAKENING"
+                trend = "WEAKENING"
+            else:
+                evolution_status = "PERSISTENT" if current_signal != "NONE" else "INSUFFICIENT_HISTORY"
+                trend = "STABLE" if evolution_status == "PERSISTENT" else "UNDETERMINED"
+        window["cold_window_signal"]["persistence_runs"] = persistence_runs
+        window["signal_evolution"] = {
+            "status": evolution_status,
+            "runs_seen": len(matches) + 1,
+            "trend": trend,
+        }
+        if evolution_status == "SHIFTING":
+            uncertainty = window.get("forecast_uncertainty", "VERY_HIGH")
+            current_level = LONG_RANGE_UNCERTAINTY_ORDER.index(uncertainty) if uncertainty in LONG_RANGE_UNCERTAINTY_ORDER else 3
+            upgraded_level = min(3, max(2, current_level + 1))
+            window["forecast_uncertainty"] = LONG_RANGE_UNCERTAINTY_ORDER[upgraded_level]
+            window.setdefault("uncertainty_drivers", []).append("run_to_run_shift")
+    return windows
+
+
+def highest_signal(windows: list[dict], path: tuple[str, ...]) -> str:
+    values = []
+    for window in windows:
+        value: object = window
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        if value in LONG_RANGE_SIGNAL_ORDER:
+            values.append(value)
+    return max(values, key=LONG_RANGE_SIGNAL_ORDER.index) if values else "UNDETERMINED"
+
+
+def long_range_overall(windows: list[dict]) -> dict:
+    directions = [
+        window.get("temperature_background", {}).get("direction")
+        for window in windows
+        if window.get("temperature_background", {}).get("direction") in {
+            "COLDER_THAN_REFERENCE",
+            "NEAR_REFERENCE",
+            "WARMER_THAN_REFERENCE",
+        }
+    ]
+    if directions:
+        counts = {value: directions.count(value) for value in set(directions)}
+        top_count = max(counts.values())
+        top_directions = [value for value, count in counts.items() if count == top_count]
+        direction = top_directions[0] if len(top_directions) == 1 else "UNDETERMINED"
+    else:
+        direction = "UNDETERMINED"
+    notable = []
+    for window in windows:
+        signals = []
+        if window.get("cold_window_signal", {}).get("signal") in {"WEAK", "MODERATE", "STRONG"}:
+            signals.append("COLD_WINDOW")
+        if window.get("snow_background", {}).get("signal") in {"WEAK", "MODERATE", "STRONG"}:
+            signals.append("SNOW_BACKGROUND")
+        if window.get("precipitation_background", {}).get("signal") in {"WEAK", "MODERATE", "STRONG"}:
+            signals.append("PRECIPITATION_BACKGROUND")
+        if window.get("strong_wind_background", {}).get("signal") in {"WEAK", "MODERATE", "STRONG"}:
+            signals.append("STRONG_WIND_BACKGROUND")
+        if signals:
+            notable.append({
+                "start_date": window["start_date"],
+                "end_date": window["end_date"],
+                "signals": signals,
+            })
+    uncertainty = max(
+        (window.get("forecast_uncertainty") for window in windows if window.get("forecast_uncertainty") in LONG_RANGE_UNCERTAINTY_ORDER),
+        key=LONG_RANGE_UNCERTAINTY_ORDER.index,
+        default="VERY_HIGH",
+    )
+    return {
+        "temperature": {"direction": direction},
+        "cold_air": {"signal": highest_signal(windows, ("cold_window_signal", "signal"))},
+        "moisture": {"signal": highest_signal(windows, ("precipitation_background", "signal"))},
+        "snow": {"signal": highest_signal(windows, ("snow_background", "signal"))},
+        "wind": {"signal": highest_signal(windows, ("strong_wind_background", "signal"))},
+        "confidence": "VERY_LOW" if uncertainty in {"HIGH", "VERY_HIGH"} else "LOW",
+        "uncertainty": uncertainty,
+        "notable_windows": notable,
+    }
+
+
+def run_long_range_reference(
+    point: dict,
+    client: ApiClient,
+    origin_date: dt.date,
+    generated_at: str,
+    data_date: str,
+) -> dict:
+    start_date = origin_date + dt.timedelta(days=LONG_RANGE_LEAD_START)
+    end_date = origin_date + dt.timedelta(days=LONG_RANGE_LEAD_END)
+    try:
+        reference_start = dt.date(2025, start_date.month, start_date.day)
+        reference_end = dt.date(2025, end_date.month, end_date.day)
+    except ValueError as error:
+        return {
+            "status": "FAILED",
+            "reason": f"REFERENCE_DATE_INVALID:{error}",
+            "daily": [],
+            "record": None,
+        }
+    record = fetch_point(
+        client,
+        point=point,
+        source="Open-Meteo",
+        endpoint=OPEN_METEO_ENDPOINTS["history"],
+        model="ECMWF IFS 9 km historical weather / analysis",
+        params=base_weather_params(
+            point,
+            models="ecmwf_ifs",
+            start_date=reference_start.isoformat(),
+            end_date=reference_end.isoformat(),
+        ),
+        variables=["temperature_2m"],
+        required_variables=["temperature_2m"],
+        grid_limit_km=13.5,
+        log_label=f"{point['id']}:LONG_REFERENCE 2025",
+    )
+    if record.get("status") == "PASS":
+        log(f"[{point['id']}] LONG_REFERENCE 2025 OK")
+    return {
+        "status": "PASS" if record.get("status") == "PASS" else "FAILED",
+        "daily": record.get("daily", []),
+        "record": record,
+        "period_start": reference_start.isoformat(),
+        "period_end": reference_end.isoformat(),
+    }
+
+
+def run_long_range(config: dict, client: ApiClient, generated_at: str, data_date: str, now_local: dt.datetime) -> dict:
+    points = active_points(config)
+    forecast_records: dict[str, dict] = {}
+    raw_references: dict[str, dict] = {}
+    active_core_ids = []
+    for region_id in CORE_REGION_IDS:
+        core_id = config["regions"][region_id].get("core_point_id")
+        point = points.get(core_id) if core_id else None
+        if not point:
+            log(f"[{region_id}] LONG_RANGE SKIPPED: PROVISIONAL")
+            continue
+        active_core_ids.append(core_id)
+        record = fetch_point(
+            client,
+            point=point,
+            source="Open-Meteo",
+            endpoint=OPEN_METEO_ENDPOINTS["ensemble"],
+            model=LONG_RANGE_MODEL,
+            params=base_weather_params(
+                point,
+                models=LONG_RANGE_MODEL_ID,
+                forecast_days=LONG_RANGE_REQUESTED_FORECAST_DAYS,
+            ),
+            variables=LONG_RANGE_VARIABLES,
+            # Temperature is the core horizon signal. Other event variables may
+            # legitimately end earlier; their per-variable edge availability is
+            # audited and their late windows remain UNDETERMINED.
+            required_variables=["temperature_2m"],
+            grid_limit_km=LONG_RANGE_GRID_QA_LIMIT_KM,
+            log_label=f"{core_id}:LONG_RANGE",
+            accepted_model_values=(LONG_RANGE_MODEL_ID, LONG_RANGE_MODEL),
+            accepted_model_ids=(LONG_RANGE_MODEL_ID,),
+        )
+        if record.get("status") == "PASS":
+            record.setdefault("qa", {})["grid_scale_class"] = "coarse_ensemble"
+            record = trim_long_range_member_edges(record)
+            members_valid, member_check = validate_long_range_members(record)
+            record.setdefault("qa", {})["long_range_member_check"] = member_check
+            if not members_valid:
+                record["status"] = "INVALID"
+                record["qa"]["valid"] = False
+                record["qa"]["final_status"] = "INVALID"
+                record["qa"]["reason"] = "LONG_RANGE_MEMBER_SCHEMA_INVALID"
+                log(f"[{core_id}] LONG_RANGE MEMBER QA FAIL")
+        forecast_records[region_id] = record
+
+    snapshots = load_long_range_snapshots(now_local.date())
+    regions = {}
+    successful_points = 0
+    partial_points = 0
+    failed_points = 0
+    forecast_horizons = []
+    member_counts = []
+    for region_id in CORE_REGION_IDS:
+        region_config = config["regions"][region_id]
+        core_id = region_config.get("core_point_id")
+        point = points.get(core_id) if core_id else None
+        if not point:
+            regions[region_id] = {
+                "status": "UNAVAILABLE",
+                "usable_for_main_chain": False,
+                "reason": "NO_VERIFIED_CORE_POINT",
+                "windows": [],
+                "overall_16_35d": {"temperature": {"direction": "UNDETERMINED"}, "confidence": "VERY_LOW"},
+                "qa": {"final_status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+            }
+            continue
+        record = forecast_records.get(region_id) or {}
+        if record.get("status") != "PASS":
+            failed_points += 1
+            regions[region_id] = {
+                "status": "FAILED",
+                "usable_for_main_chain": True,
+                "point_id": core_id,
+                "visit_date": region_config.get("primary_visit_date"),
+                "windows": [],
+                "overall_16_35d": {"temperature": {"direction": "UNDETERMINED"}, "confidence": "VERY_LOW"},
+                "reason": (record.get("qa") or {}).get("reason", "OPEN_METEO_LONG_RANGE_NOT_AVAILABLE"),
+                "qa": record.get("qa") or {"final_status": "INVALID", "reason": "OPEN_METEO_LONG_RANGE_NOT_AVAILABLE"},
+            }
+            continue
+        origin_date, daily_by_lead = long_range_daily_member_values(record["hourly"])
+        horizon_check = long_range_horizon_check(daily_by_lead)
+        record.setdefault("qa", {})["long_range_horizon_check"] = horizon_check
+        if horizon_check["status"] == "FAIL":
+            record["status"] = "INVALID"
+            record["qa"]["valid"] = False
+            record["qa"]["final_status"] = "INVALID"
+            record["qa"]["reason"] = "LONG_RANGE_HORIZON_INVALID"
+            failed_points += 1
+            regions[region_id] = {
+                "status": "FAILED",
+                "usable_for_main_chain": True,
+                "point_id": core_id,
+                "visit_date": region_config.get("primary_visit_date"),
+                "windows": [],
+                "overall_16_35d": {"temperature": {"direction": "UNDETERMINED"}, "confidence": "VERY_LOW"},
+                "reason": "LONG_RANGE_HORIZON_INVALID",
+                "qa": record.get("qa"),
+            }
+            continue
+        successful_points += 1
+        last_time = (record.get("hourly") or {}).get("time", [None])[-1]
+        forecast_horizons.append(horizon_check["actual_lead_days"])
+        member_check = record.get("qa", {}).get("long_range_member_check", {})
+        member_counts.extend(member_check.get("actual_member_counts_by_variable", {}).values())
+        variable_horizon_partial = bool(member_check.get("edge_truncated_variables"))
+        reference = run_long_range_reference(point, client, origin_date, generated_at, data_date)
+        raw_references[region_id] = reference.get("record")
+        reference_days = {day["date"]: day for day in reference.get("daily", [])}
+        windows = build_long_range_windows(origin_date, daily_by_lead, reference_days)
+        windows = apply_signal_evolution(region_id, windows, snapshots)
+        region_status = "OK" if (
+            reference.get("status") == "PASS"
+            and horizon_check["status"] == "PASS"
+            and not variable_horizon_partial
+        ) else "PARTIAL"
+        if region_status == "PARTIAL":
+            partial_points += 1
+        regions[region_id] = {
+            "status": region_status,
+            "usable_for_main_chain": True,
+            "point_id": core_id,
+            "visit_date": region_config.get("primary_visit_date"),
+            "forecast_origin_date": origin_date.isoformat(),
+            "forecast_last_timestamp": last_time,
+            "windows": windows,
+            "overall_16_35d": long_range_overall(windows),
+            "historical_reference": {
+                "status": reference.get("status"),
+                "period_start": reference.get("period_start"),
+                "period_end": reference.get("period_end"),
+                "kind": "historical_reference",
+            },
+            "qa": {
+                "forecast": record.get("qa"),
+                "historical_reference": (reference.get("record") or {}).get("qa"),
+                "grid_scale_class": "coarse_ensemble",
+                "variable_horizon_partial": variable_horizon_partial,
+                "final_status": "PASS" if region_status == "OK" else "PARTIAL",
+            },
+        }
+
+    for region_id, region_config in config["regions"].items():
+        if region_id in regions:
+            continue
+        log(f"[{region_id}] LONG_RANGE SKIPPED: PROVISIONAL")
+        regions[region_id] = {
+            "status": "UNAVAILABLE",
+            "usable_for_main_chain": False,
+            "reason": "NO_VERIFIED_CORE_POINT",
+            "windows": [],
+            "overall_16_35d": {"temperature": {"direction": "UNDETERMINED"}, "confidence": "VERY_LOW"},
+            "qa": {"final_status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
+        }
+
+    if not active_core_ids or failed_points == len(active_core_ids):
+        status = "FAILED"
+    elif failed_points or partial_points:
+        status = "PARTIAL"
+    else:
+        status = "OK"
+    actual_horizon = min(forecast_horizons) if forecast_horizons else None
+    actual_members = min(member_counts) if member_counts else None
+    horizon_status = (
+        "PASS"
+        if actual_horizon is not None and actual_horizon >= LONG_RANGE_REQUESTED_FORECAST_DAYS
+        else "PARTIAL"
+        if actual_horizon and actual_horizon > LONG_RANGE_LEAD_START
+        else "FAILED"
+    )
+    return module_header(
+        "long_range_background",
+        generated_at,
+        data_date,
+        status,
+        source="Open-Meteo",
+        endpoint=OPEN_METEO_ENDPOINTS["ensemble"],
+        model=LONG_RANGE_MODEL,
+        model_id=LONG_RANGE_MODEL_ID,
+        model_documentation=LONG_RANGE_ENDPOINT_DOC,
+        model_registry_documentation=LONG_RANGE_MODEL_REGISTRY_DOC,
+        ensemble_members=actual_members or LONG_RANGE_ENSEMBLE_MEMBERS,
+        expected_ensemble_members=LONG_RANGE_ENSEMBLE_MEMBERS,
+        requested_forecast_days=LONG_RANGE_REQUESTED_FORECAST_DAYS,
+        forecast_horizon_days=actual_horizon,
+        forecast_lead_days=max(0, (actual_horizon or 1) - 1),
+        forecast_horizon_status=horizon_status,
+        forecast_last_timestamp=max(
+            (region.get("forecast_last_timestamp") for region in regions.values() if region.get("forecast_last_timestamp")),
+            default=None,
+        ),
+        native_resolution="0.5° (~50 km)",
+        native_time_resolution="3-hourly",
+        time_resolution_note="Open-Meteo documents hourly interpolation for ensemble output; the GFS 0.5° product is natively 3-hourly.",
+        coverage="global; Xinjiang is within the global product domain",
+        aggregation={
+            "type": "fixed_3_day_blocks",
+            "lead_day_range": f"D{LONG_RANGE_LEAD_START}_D{LONG_RANGE_LEAD_END}",
+            "windows": [f"D{start}_D{end}" for start, end in long_range_window_definitions()],
+            "hourly_values_in_public_artifact": False,
+        },
+        interpretation_boundary="16-35 day background signal only; not a date-level precise forecast and not a direct phenology lead/lag calculation.",
+        regions=regions,
+        excluded_points=excluded_points(config),
+        raw_references=raw_references,
+        raw_points=forecast_records,
+        successful_points=successful_points,
+        partial_points=partial_points,
+        failed_points=failed_points,
+        qa={
+            "grid_scale_class": "coarse_ensemble",
+            "expected_ensemble_members": LONG_RANGE_ENSEMBLE_MEMBERS,
+            "actual_ensemble_members": actual_members,
+            "actual_horizon_days_including_today": actual_horizon,
+            "horizon_status": horizon_status,
+            "forecast_lead_days": max(0, (actual_horizon or 1) - 1),
+            "last_available_timestamp": max(
+                (region.get("forecast_last_timestamp") for region in regions.values() if region.get("forecast_last_timestamp")),
+                default=None,
+            ),
+            "region_statuses": {region_id: region.get("status") for region_id, region in regions.items()},
+        },
     )
 
 
@@ -1780,6 +2742,56 @@ def gfs_crosscheck(hres_record: dict | None, gfs_record: dict | None) -> dict:
     }
 
 
+def unavailable_long_range_summary(reason: str) -> dict:
+    return {
+        "status": "UNAVAILABLE",
+        "reason": reason,
+    }
+
+
+def long_range_summary_for_chatgpt(region: dict | None) -> dict:
+    """Expose only coarse 16-35 day labels in summary.json."""
+    if not region:
+        return unavailable_long_range_summary("LONG_RANGE_MODULE_UNAVAILABLE")
+    region_status = region.get("status")
+    if region_status == "UNAVAILABLE":
+        return unavailable_long_range_summary(region.get("reason", "NO_VERIFIED_CORE_POINT"))
+    if region_status == "FAILED":
+        return {"status": "FAILED", "reason": region.get("reason", "LONG_RANGE_FETCH_FAILED")}
+    overall = region.get("overall_16_35d") or {}
+    notable_windows = []
+    for window in overall.get("notable_windows", []):
+        for signal in window.get("signals", []):
+            notable_windows.append({
+                "start_date": window.get("start_date"),
+                "end_date": window.get("end_date"),
+                "signal": signal,
+            })
+    evolution = [
+        {
+            "horizon_class": window.get("horizon_class"),
+            "start_date": window.get("start_date"),
+            "end_date": window.get("end_date"),
+            "status": (window.get("signal_evolution") or {}).get("status", "INSUFFICIENT_HISTORY"),
+            "runs_seen": (window.get("signal_evolution") or {}).get("runs_seen", 0),
+            "trend": (window.get("signal_evolution") or {}).get("trend", "UNDETERMINED"),
+        }
+        for window in region.get("windows", [])
+    ]
+    return {
+        "status": "PASS" if region_status == "OK" else "PARTIAL",
+        "temperature_background": (overall.get("temperature") or {}).get("direction", "UNDETERMINED"),
+        "cold_air_signal": (overall.get("cold_air") or {}).get("signal", "UNDETERMINED"),
+        "precipitation_signal": (overall.get("moisture") or {}).get("signal", "UNDETERMINED"),
+        "snow_signal": (overall.get("snow") or {}).get("signal", "UNDETERMINED"),
+        "strong_wind_signal": (overall.get("wind") or {}).get("signal", "UNDETERMINED"),
+        "uncertainty": overall.get("uncertainty", "VERY_HIGH"),
+        "notable_windows": notable_windows,
+        "signal_evolution": evolution,
+        "interpretation": "16-35 day background signal only; not a date-level forecast or phenology lead/lag calculation",
+    }
+
+
 def summary_qa(
     hres_record: dict | None,
     history_region: dict | None,
@@ -1787,6 +2799,7 @@ def summary_qa(
     gfs_record: dict | None,
     single_region: dict | None,
     spatial_region: dict | None,
+    long_range_region: dict | None = None,
 ) -> dict:
     return {
         "hres": hres_record.get("status") if hres_record else "FAILED",
@@ -1795,6 +2808,11 @@ def summary_qa(
         "gfs": gfs_record.get("status") if gfs_record else "FAILED",
         "single_runs": single_region.get("status") if single_region else "FAILED",
         "spatial_sampling": spatial_region.get("status") if spatial_region else "FAILED",
+        "long_range": (
+            long_range_region.get("status")
+            if long_range_region
+            else "FAILED"
+        ),
     }
 
 
@@ -1809,9 +2827,11 @@ def build_summary(
     gfs: dict,
     single_runs: dict,
     spatial: dict,
+    long_range: dict | None = None,
 ) -> dict:
     active = active_points(config)
     history_regions = (history.get("region_summaries") or {}).get("regions", {})
+    long_range_regions = (long_range or {}).get("regions") or {}
     regions = {}
     for region_id, region_config in config["regions"].items():
         core_id = region_config.get("core_point_id")
@@ -1822,6 +2842,7 @@ def build_summary(
         history_region = history_regions.get(region_id)
         single_region = (single_runs.get("regions") or {}).get(region_id)
         spatial_region = (spatial.get("regions") or {}).get(region_id)
+        long_range_region = long_range_regions.get(region_id)
         if not core_point:
             regions[region_id] = {
                 "visit_date": region_config.get("primary_visit_date"),
@@ -1836,7 +2857,8 @@ def build_summary(
                 "ensemble": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
                 "gfs_crosscheck": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
                 "leaf_loss_weather_risk": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
-                "qa": summary_qa(None, None, None, None, None, spatial_region),
+                "forecast_16_35d": unavailable_long_range_summary("NO_VERIFIED_CORE_POINT"),
+                "qa": summary_qa(None, None, None, None, None, spatial_region, long_range_region),
             }
             continue
         hres_days = (hres_record or {}).get("daily", [])
@@ -1864,7 +2886,8 @@ def build_summary(
             "ensemble": ensemble_summary,
             "gfs_crosscheck": gfs_crosscheck(hres_record, gfs_record),
             "leaf_loss_weather_risk": leaf_loss_weather_risk(hres_days, now_local.date()) if hres_record and hres_record.get("status") == "PASS" else {"status": "UNAVAILABLE", "reason": "HRES_INVALID"},
-            "qa": summary_qa(hres_record, history_region, ensemble_record, gfs_record, single_region, spatial_region),
+            "forecast_16_35d": long_range_summary_for_chatgpt(long_range_region),
+            "qa": summary_qa(hres_record, history_region, ensemble_record, gfs_record, single_region, spatial_region, long_range_region),
         }
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1882,10 +2905,17 @@ def build_summary(
     }
 
 
-def failed_module(name: str, generated_at: str, data_date: str, error: Exception) -> dict:
+def failed_module(
+    name: str,
+    generated_at: str,
+    data_date: str,
+    error: Exception,
+    *,
+    artifact_module: str | None = None,
+) -> dict:
     reason = f"{type(error).__name__}:{error}"
     log(f"[{name}] MODULE FAILED: {reason}")
-    return module_header(name, generated_at, data_date, "FAILED", error=reason, points={}, regions={})
+    return module_header(artifact_module or name, generated_at, data_date, "FAILED", error=reason, points={}, regions={})
 
 
 def compact_record(record: dict) -> dict:
@@ -1938,7 +2968,21 @@ def compact_module(name: str, value: dict) -> dict:
                     run_item["record"] = compact_record(run["record"])
                 item["runs"].append(run_item)
             compact["regions"][region_id] = item
+    elif name == "long_range":
+        compact.pop("raw_points", None)
+        compact.pop("raw_references", None)
+        compact["raw_hourly_included"] = False
     return compact
+
+
+def public_long_range_artifact(value: dict) -> dict:
+    """Remove member-level hourly payloads from the ChatGPT-facing artifact."""
+    public = copy.deepcopy(value)
+    public.pop("raw_points", None)
+    public.pop("raw_references", None)
+    public["raw_hourly_included"] = False
+    public["raw_snapshot_retention_days"] = RAW_RETENTION_DAYS
+    return public
 
 
 def prune_old_raw_archives(current_archive_date: dt.date) -> None:
@@ -1968,6 +3012,7 @@ def write_outputs(
     gfs: dict,
     single_runs: dict,
     spatial: dict,
+    long_range: dict,
     summary: dict,
 ) -> None:
     artifacts = {
@@ -1978,6 +3023,7 @@ def write_outputs(
         "gfs.json": gfs,
         "single_runs.json": single_runs,
         "spatial_sampling.json": spatial,
+        "long_range.json": public_long_range_artifact(long_range),
         "summary.json": summary,
     }
     for filename, artifact in artifacts.items():
@@ -1994,6 +3040,7 @@ def write_outputs(
         "gfs.json.gz": gfs,
         "single_runs.json.gz": single_runs,
         "spatial_sampling.json.gz": spatial,
+        "long_range.json.gz": long_range,
     }
     for filename, artifact in raw_values.items():
         write_gzip_json(archive_path / "raw" / filename, artifact)
@@ -2003,8 +3050,9 @@ def write_outputs(
 def build_status(config: dict, generated_at: str, data_date: str, modules: dict[str, dict]) -> dict:
     module_names = ("hres", "history", "ensemble", "gfs", "single_runs")
     module_values = {name: modules.get(name, {}).get("status", "FAILED") for name in module_names}
+    long_range_status = modules.get("long_range", {}).get("status", "FAILED")
     if all(value == "OK" for value in module_values.values()):
-        pipeline_status = "OK"
+        pipeline_status = "OK" if long_range_status == "OK" else "PARTIAL"
     elif modules.get("hres", {}).get("status") == "OK" or modules.get("history", {}).get("status") == "OK":
         pipeline_status = "DEGRADED"
     else:
@@ -2024,11 +3072,15 @@ def build_status(config: dict, generated_at: str, data_date: str, modules: dict[
         "generated_at": generated_at,
         "data_date": data_date,
         "pipeline_status": pipeline_status,
-        "modules": module_values | {"spatial_sampling": modules.get("spatial_sampling", {}).get("status", "FAILED")},
+        "modules": module_values | {
+            "spatial_sampling": modules.get("spatial_sampling", {}).get("status", "FAILED"),
+            "long_range": long_range_status,
+        },
         "module_details": {
             name: {
                 "status": value.get("status", "FAILED"),
                 "successful_points": value.get("successful_points", value.get("successful_fetches")),
+                "partial_points": value.get("partial_points"),
                 "failed_points": value.get("failed_points", value.get("failed_fetches")),
                 "error": value.get("error"),
             }
@@ -2055,7 +3107,7 @@ def minimal_failure_status(generated_at: str, reason: str) -> dict:
         "generated_at": generated_at,
         "data_date": None,
         "pipeline_status": "FAILED",
-        "modules": {"hres": "FAILED", "history": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED"},
+        "modules": {"hres": "FAILED", "history": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED"},
         "module_details": {"pipeline": {"status": "FAILED", "error": reason}},
         "points": {},
         "route_slots": {},
@@ -2108,9 +3160,33 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
     except Exception as error:
         modules["single_runs"] = failed_module("single_runs", generated_at, data_date, error)
 
-    log("PHASE 7: SUMMARY")
+    log("PHASE 7: GFS ENSEMBLE LONG RANGE")
     try:
-        summary = build_summary(config, generated_at, data_date, now_local, modules["hres"], modules["history"], modules["ensemble"], modules["gfs"], modules["single_runs"], modules["spatial_sampling"])
+        modules["long_range"] = run_long_range(config, client, generated_at, data_date, now_local)
+    except Exception as error:
+        modules["long_range"] = failed_module(
+            "long_range",
+            generated_at,
+            data_date,
+            error,
+            artifact_module="long_range_background",
+        )
+
+    log("PHASE 8: SUMMARY")
+    try:
+        summary = build_summary(
+            config,
+            generated_at,
+            data_date,
+            now_local,
+            modules["hres"],
+            modules["history"],
+            modules["ensemble"],
+            modules["gfs"],
+            modules["single_runs"],
+            modules["spatial_sampling"],
+            modules["long_range"],
+        )
     except Exception as error:
         log(f"[summary] BUILD FAILED: {type(error).__name__}:{error}")
         summary = {
@@ -2132,6 +3208,7 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
         gfs=modules["gfs"],
         single_runs=modules["single_runs"],
         spatial=modules["spatial_sampling"],
+        long_range=modules["long_range"],
         summary=summary,
     )
     log(f"PIPELINE STATUS: {status['pipeline_status']}")
