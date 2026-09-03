@@ -131,6 +131,10 @@ max(0, 10 - daily_mean)
 
 `data/latest/history_forward.json` 只在阿勒泰主 namespace 中运行。它以当天 `forecast_date` 为 anchor，调用 Historical Weather API 查询 2023、2024、2025 同一日历节点之后真实发生的天气；2026 仍由现有实时预报链提供，不进入该历史模块。
 
+历史 API 使用持久化缓存：`data/cache/history/<namespace>/<year>/<point_id>.json`。缓存只保留紧凑的逐日值，但完整绑定请求坐标、返回模式格点、返回高程、模型参数、`cell_selection=nearest`、`elevation=nan`、时区、endpoint 和 QA。首次运行会补齐当前需要的历史日期；后续运行由 `history_comparison`、`history_forward` 和 Long Range 的 2025 历史参考层在本地切片，只有缓存缺失的连续日期才重新请求 Open-Meteo。缓存身份不一致会标记 `INVALID`，不会混用不同坐标、模型或格点。运行记录会在模块的 `history_cache` 字段中给出命中数、补抓数和实际 API 请求数。
+
+需要偶尔重新核验时，可在本地使用 `python src/pipeline.py --refresh-history`，或从 GitHub Actions 的 `workflow_dispatch` 表单勾选 `refresh_history`。强制复核仍只接受通过同一 QA 的 Open-Meteo 返回；验证失败会保留失败状态，不会用旧缓存或其他来源伪装成最新数据。
+
 每个 VERIFIED 核心区域提供 `regions.<region>.years.<year>.d0_7`、`d8_15` 和 `d16_to_10_06` 三个窗口。以 2026-09-02 为例，三个窗口分别是 09-02/09-09、09-10/09-17、09-18/10-06，均包含首尾；日期随每日 anchor 滚动，10-07 及以后永远不请求、不写入输出。窗口同时保留每日温度、降水、降雪、日照和最大阵风，以及窗口统计和前 3 日/后 3 日平均温度变化。
 
 窗口可用性独立判断：`d0_7.status=OK` 且 `usable_for_main_chain=true` 时进入当前主链；`d8_15.status=PARTIAL` 时保留已完成日期并将 `usable_for_trend_reference=true`，例如 `9/10–16预测，9/17待补`；`d16_to_10_06.status=INVALID` 时 `usable_for_main_chain=false`，不参与当前结论。单个窗口缺失不会把整个地区标记为 `usable_for_main_chain=false`；地区级可用性以当前 `d0_7` 是否可用为准。
@@ -183,6 +187,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 ├── config/points.json
 ├── config/ejina_points.json
 ├── data/
+│   ├── cache/history/<namespace>/<year>/<point_id>.json
 │   ├── latest/
 │   │   ├── status.json
 │   │   ├── summary.json
@@ -201,7 +206,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │       ├── 同名压缩后的每日 JSON（含 history_forward.json 和 phenology_weather_summary.json）
 │       ├── raw/*.json.gz
 │       └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json + raw/*.json.gz
-├── schemas/{status,summary,module,history_forward,long_range,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
+├── schemas/{status,summary,module,history_cache,history_forward,long_range,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt
@@ -212,7 +217,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 
 ## GitHub Actions 和本地运行
 
-`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并在 `00/06/12/18 UTC` 模型时次后第 17 分钟运行，即北京时间每天 `02:17、08:17、14:17、20:17`。17 分钟偏移用于避开整点负载；Open-Meteo 的实际到数时间仍可能因模型处理和服务器同步浮动。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再请求 Open-Meteo，最后在 `permissions: contents: write` 下提交 `data/latest` 和 `data/archive`。
+`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并在 `00/06/12/18 UTC` 模型时次后第 17 分钟运行，即北京时间每天 `02:17、08:17、14:17、20:17`。17 分钟偏移用于避开整点负载；Open-Meteo 的实际到数时间仍可能因模型处理和服务器同步浮动。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再读取/补抓 Open-Meteo 历史缓存和请求其他模块，最后在 `permissions: contents: write` 下提交 `data/latest`、`data/archive` 和 `data/cache`。手动触发时可勾选 `refresh_history`，强制重新核验历史缓存。
 
 本地运行：
 
@@ -220,6 +225,8 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 python3.12 -m pip install -r requirements.txt
 python3.12 -m unittest discover -s tests -v
 python3.12 src/pipeline.py
+# 偶尔强制复核历史缓存
+python3.12 src/pipeline.py --refresh-history
 ```
 
 运行日志会打印类似 `[B1] HRES FETCH OK`、`[B1] GRID QA PASS`、`[B1] HISTORY 2025 OK`、`[H1] HRES FETCH OK` 和 `[K4] SKIPPED: PROVISIONAL`。JSON Schema 文件位于 `schemas/`，机器端应先检查 `status.json`，再按模块状态读取 `summary.json` 或相应明细。

@@ -271,14 +271,16 @@ class PipelineUnitTests(unittest.TestCase):
                 "daily": daily,
             }
 
-        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
-            forward = pipeline.run_history_forward(
-                config,
-                object(),
-                "2026-09-02T00:00:00Z",
-                "2026-09-01",
-                date(2026, 9, 2),
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    forward = pipeline.run_history_forward(
+                        config,
+                        object(),
+                        "2026-09-02T00:00:00Z",
+                        "2026-09-01",
+                        date(2026, 9, 2),
+                    )
         hres_points = {}
         for point_id in pipeline.history_forward_point_ids(config):
             point = config["points"][point_id]
@@ -480,19 +482,34 @@ class PipelineUnitTests(unittest.TestCase):
                 "point": point,
                 "status": "PASS",
                 "hourly": hourly,
-                "request": {"coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]}},
-                "response": {"grid_coordinate": {"latitude": 48.75, "longitude": 86.75}},
+                "request": {
+                    "coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]},
+                    "parameters": kwargs["params"],
+                },
+                "response": {
+                    "grid_coordinate": {"latitude": 48.75, "longitude": 86.75},
+                    "returned_elevation": 1000,
+                    "timezone": "Asia/Shanghai",
+                    "utc_offset_seconds": 28800,
+                },
+                "qa": {
+                    "final_status": "PASS",
+                    "grid_distance_km": 0,
+                    "grid_distance_limit_km": pipeline.HISTORY_GRID_QA_LIMIT_KM,
+                },
                 "solar_variable": None,
             }
 
-        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
-            history = pipeline.run_history(
-                config,
-                object(),
-                "2026-08-28T00:00:00Z",
-                "2026-08-27",
-                date(2026, 8, 27),
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    history = pipeline.run_history(
+                        config,
+                        object(),
+                        "2026-08-28T00:00:00Z",
+                        "2026-08-27",
+                        date(2026, 8, 27),
+                    )
 
         self.assertEqual(history["history_years"], [2023, 2024, 2025, 2026])
         self.assertEqual(len(requests), len(pipeline.active_points(config)) * 4)
@@ -501,6 +518,244 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertTrue(all(item["cell_selection"] == "nearest" for item in requests))
         self.assertTrue(all(item["elevation"] == "nan" for item in requests))
         self.assertTrue(all(item["timezone"] == "Asia/Shanghai" for item in requests))
+
+    def test_history_cache_hit_does_not_repeat_api_request(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                first = pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    cache_dir=cache_dir,
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+                second = pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    cache_dir=cache_dir,
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+            self.assertEqual(first["status"], "PASS")
+            self.assertEqual(second["status"], "PASS")
+            self.assertEqual(second["history_cache"]["status"], "HIT")
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(
+                pipeline.history_cache_path(config, 2025, "B1", cache_dir),
+                cache_dir / "altay" / "2025" / "B1.json",
+            )
+            with pipeline.history_cache_path(config, 2025, "B1", cache_dir).open(encoding="utf-8") as handle:
+                cache = json.load(handle)
+            with (ROOT / "schemas" / "history_cache.schema.json").open(encoding="utf-8") as handle:
+                schema = json.load(handle)
+            self.assertEqual(list(Draft202012Validator(schema).iter_errors(cache)), [])
+
+    def test_history_cache_only_fills_missing_dates(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    cache_dir=Path(tmp),
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+                filled = pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-05",
+                    cache_dir=Path(tmp),
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(requests[1]["start_date"], "2025-09-04")
+            self.assertEqual(requests[1]["end_date"], "2025-09-05")
+            self.assertEqual(filled["status"], "PASS")
+            self.assertEqual(filled["history_cache"]["status"], "FILLED")
+            self.assertEqual(filled["history_cache"]["missing_date_count_before_fetch"], 2)
+
+    def test_history_cache_identity_mismatch_is_invalid_without_refetch(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    cache_dir=cache_dir,
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+            cache_path = pipeline.history_cache_path(config, 2025, "B1", cache_dir)
+            with cache_path.open(encoding="utf-8") as handle:
+                cache = json.load(handle)
+            cache["identity"]["timezone"] = "UTC"
+            with cache_path.open("w", encoding="utf-8") as handle:
+                json.dump(cache, handle)
+            with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                invalid = pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    cache_dir=cache_dir,
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(invalid["status"], "INVALID")
+            self.assertEqual(invalid["history_cache"]["status"], "INVALID")
+            self.assertEqual(invalid["qa"]["reason"], "HISTORY_CACHE_IDENTITY_MISMATCH")
+            self.assertIn("timezone", invalid["history_cache"]["identity_mismatches"])
+
+    def test_refresh_history_forces_full_cache_revalidation(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    cache_dir=Path(tmp),
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+                refreshed = pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-01",
+                    "2025-09-03",
+                    refresh_history=True,
+                    cache_dir=Path(tmp),
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(requests[1]["start_date"], "2025-09-01")
+            self.assertEqual(requests[1]["end_date"], "2025-09-03")
+            self.assertEqual(refreshed["status"], "PASS")
+            self.assertEqual(refreshed["history_cache"]["status"], "REFRESHED")
+
+    def test_history_forward_reuses_cache_warmed_by_history_comparison(self):
+        config = pipeline.load_config()
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)), patch.object(pipeline, "log"):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    history = pipeline.run_history(
+                        config,
+                        object(),
+                        "2026-09-02T00:00:00Z",
+                        "2026-09-01",
+                        date(2026, 9, 1),
+                        forward_anchor_date=date(2026, 9, 2),
+                    )
+                calls_after_history = len(requests)
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    forward = pipeline.run_history_forward(
+                        config,
+                        object(),
+                        "2026-09-02T00:00:00Z",
+                        "2026-09-01",
+                        date(2026, 9, 2),
+                    )
+            self.assertEqual(calls_after_history, len(pipeline.active_points(config)) * 4)
+            self.assertEqual(len(requests), calls_after_history)
+            self.assertEqual(history["history_cache"]["api_requests"], calls_after_history)
+            self.assertEqual(forward["history_cache"]["api_requests"], 0)
+            self.assertEqual(forward["history_cache"]["cache_hits"], len(pipeline.history_forward_point_ids(config)) * 3)
+
+    def test_long_range_reference_reuses_historical_cache(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                pipeline.history_cache_record_or_fetch(
+                    config,
+                    object(),
+                    point,
+                    2025,
+                    "2025-09-19",
+                    "2025-09-21",
+                    cache_dir=cache_dir,
+                    log_label="B1:HISTORY CACHE TEST",
+                )
+                reference = pipeline.run_long_range_reference(
+                    config,
+                    point,
+                    object(),
+                    date(2026, 9, 3),
+                    "2026-09-03T00:00:00Z",
+                    "2026-09-02",
+                    cache_dir=cache_dir,
+                )
+            self.assertEqual(reference["status"], "PASS")
+            self.assertEqual(reference["record"]["history_cache"]["status"], "FILLED")
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(requests[1]["start_date"], "2025-09-22")
+            self.assertEqual(requests[1]["end_date"], "2025-10-08")
 
     def make_history_forward_record(self, point, params, *, grid=None):
         start = date.fromisoformat(params["start_date"])
@@ -529,6 +784,7 @@ class PipelineUnitTests(unittest.TestCase):
                 "grid_coordinate": returned_grid,
                 "returned_elevation": 1000,
                 "timezone": "Asia/Shanghai",
+                "utc_offset_seconds": 28800,
             },
             "qa": {
                 "final_status": "PASS",
@@ -569,14 +825,16 @@ class PipelineUnitTests(unittest.TestCase):
             requests.append(kwargs["params"])
             return self.make_history_forward_record(kwargs["point"], kwargs["params"])
 
-        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
-            result = pipeline.run_history_forward(
-                config,
-                object(),
-                "2026-09-02T00:00:00Z",
-                "2026-09-01",
-                date(2026, 9, 2),
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    result = pipeline.run_history_forward(
+                        config,
+                        object(),
+                        "2026-09-02T00:00:00Z",
+                        "2026-09-01",
+                        date(2026, 9, 2),
+                    )
         self.assertEqual(result["status"], "OK")
         self.assertEqual(result["history_years"], [2023, 2024, 2025])
         self.assertEqual(result["forecast_date"], "2026-09-02")
@@ -631,14 +889,16 @@ class PipelineUnitTests(unittest.TestCase):
             grid = {"latitude": 48.75, "longitude": 86.75} if year != 2024 else {"latitude": 48.80, "longitude": 86.75}
             return self.make_history_forward_record(kwargs["point"], kwargs["params"], grid=grid)
 
-        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
-            result = pipeline.run_history_forward(
-                config,
-                object(),
-                "2026-09-02T00:00:00Z",
-                "2026-09-01",
-                date(2026, 9, 2),
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    result = pipeline.run_history_forward(
+                        config,
+                        object(),
+                        "2026-09-02T00:00:00Z",
+                        "2026-09-01",
+                        date(2026, 9, 2),
+                    )
         self.assertEqual(result["status"], "FAILED")
         point = result["points"]["B1"]
         self.assertEqual(point["same_grid_qa"]["final_status"], "FAILED")

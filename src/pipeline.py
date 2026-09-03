@@ -33,6 +33,7 @@ CONFIG_PATH = ROOT / "config" / "points.json"
 EJINA_CONFIG_PATH = ROOT / "config" / "ejina_points.json"
 LATEST_DIR = ROOT / "data" / "latest"
 ARCHIVE_DIR = ROOT / "data" / "archive"
+HISTORY_CACHE_DIR = ROOT / "data" / "cache" / "history"
 TIMEZONE_NAME = "Asia/Shanghai"
 LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
 UTC = dt.timezone.utc
@@ -79,6 +80,8 @@ LONG_RANGE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gus
 LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
 LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
 CORE_REGION_IDS = ("baihaba", "kanas", "hemu", "keketuohai")
+HISTORY_MODEL = "ECMWF IFS 9 km historical weather / analysis"
+HISTORY_MODEL_PARAMETER = "ecmwf_ifs"
 THRESHOLDS_C = (15.0, 10.0, 5.0, 2.0, 0.0)
 DEFAULT_HISTORY_YEARS = (2025, 2026)
 HISTORY_FORWARD_YEARS = (2023, 2024, 2025)
@@ -903,11 +906,631 @@ def history_date_range(
     return start.isoformat(), end.isoformat()
 
 
-def run_history(config: dict, client: ApiClient, generated_at: str, data_date: str, completed_date: dt.date) -> dict:
+def history_cache_namespace(config: dict) -> str:
+    """Keep historical caches separated between the Altay and Ejina namespaces."""
+    return str(config.get("namespace") or "altay")
+
+
+def history_cache_path(
+    config: dict,
+    year: int,
+    point_id: str,
+    cache_dir: Path | None = None,
+) -> Path:
+    """Return the stable cache path for one namespace/year/VERIFIED point."""
+    root = Path(cache_dir) if cache_dir is not None else HISTORY_CACHE_DIR
+    return root / history_cache_namespace(config) / str(year) / f"{point_id}.json"
+
+
+def history_cache_relative_path(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def history_cache_daily(record: dict) -> list[dict]:
+    """Extract daily values for the compact cache without retaining hourly arrays."""
+    daily = record.get("daily")
+    if isinstance(daily, list):
+        return copy.deepcopy(daily)
+    hourly = record.get("hourly")
+    if isinstance(hourly, dict):
+        return daily_metrics(hourly, record.get("solar_variable"))
+    return []
+
+
+def history_cache_identity(config: dict, point: dict, year: int, record: dict) -> dict:
+    """Capture every input and returned-grid value that gives a cache its meaning."""
+    request = record.get("request") or {}
+    parameters = request.get("parameters") or {}
+    response = record.get("response") or {}
+    qa = record.get("qa") or {}
+    grid = response.get("grid_coordinate")
+    grid_key = record_grid_cell_key(record)
+    return {
+        "namespace": history_cache_namespace(config),
+        "year": int(year),
+        "point_id": point.get("id"),
+        "source": record.get("source", "Open-Meteo"),
+        "endpoint": record.get("endpoint", OPEN_METEO_ENDPOINTS["history"]),
+        "model": record.get("model", HISTORY_MODEL),
+        "model_parameter": parameters.get("models", HISTORY_MODEL_PARAMETER),
+        "requested_coordinate": request.get("coordinate") or {
+            "latitude": point.get("latitude"),
+            "longitude": point.get("longitude"),
+        },
+        "returned_grid_coordinate": copy.deepcopy(grid),
+        "returned_elevation": response.get("returned_elevation"),
+        "grid_distance_km": qa.get("grid_distance_km"),
+        "grid_distance_limit_km": qa.get("grid_distance_limit_km", HISTORY_GRID_QA_LIMIT_KM),
+        "grid_cell_key": grid_key,
+        "cell_selection": parameters.get("cell_selection"),
+        "elevation": parameters.get("elevation"),
+        "timezone": parameters.get("timezone") or response.get("timezone"),
+        "utc_offset_seconds": response.get("utc_offset_seconds"),
+        "solar_variable": record.get("solar_variable"),
+    }
+
+
+def history_cache_key(identity: dict) -> str:
+    return ":".join(
+        str(identity.get(key) or "UNKNOWN")
+        for key in ("namespace", "year", "point_id", "grid_cell_key")
+    )
+
+
+def history_cache_record_metadata(point: dict, record: dict) -> dict:
+    return {
+        "point": {
+            "name": point.get("name"),
+            "region": point.get("region"),
+            "status": point.get("status"),
+            "latitude": point.get("latitude"),
+            "longitude": point.get("longitude"),
+        },
+        "source": record.get("source", "Open-Meteo"),
+        "endpoint": record.get("endpoint", OPEN_METEO_ENDPOINTS["history"]),
+        "model": record.get("model", HISTORY_MODEL),
+        "request": copy.deepcopy(record.get("request") or {}),
+        "response": copy.deepcopy(record.get("response") or {}),
+        "qa": copy.deepcopy(record.get("qa") or {}),
+        "solar_variable": record.get("solar_variable"),
+    }
+
+
+def history_cache_from_record(
+    config: dict,
+    point: dict,
+    year: int,
+    record: dict,
+    requested_start: str,
+    requested_end: str,
+    *,
+    mode: str,
+) -> dict:
+    daily = history_cache_daily(record)
+    identity = history_cache_identity(config, point, year, record)
+    retrieval_time = (
+        (record.get("response") or {}).get("retrieval_time")
+        or iso_utc(dt.datetime.now(UTC))
+    )
+    return {
+        "cache_schema_version": "1.0.0",
+        "schema_version": SCHEMA_VERSION,
+        "cache_kind": "historical_daily_weather",
+        "cache_key": history_cache_key(identity),
+        "namespace": history_cache_namespace(config),
+        "year": int(year),
+        "point_id": point.get("id"),
+        "identity": identity,
+        "record_metadata": history_cache_record_metadata(point, record),
+        "daily": daily,
+        "cached_dates": sorted({day.get("date") for day in daily if day.get("date")}),
+        "date_range": {
+            "start_date": min((day["date"] for day in daily if day.get("date")), default=None),
+            "end_date": max((day["date"] for day in daily if day.get("date")), default=None),
+        },
+        "retrievals": [{
+            "retrieved_at": retrieval_time,
+            "requested_start_date": requested_start,
+            "requested_end_date": requested_end,
+            "mode": mode,
+            "status": "PASS",
+        }],
+        "last_retrieval_time": retrieval_time,
+    }
+
+
+def _history_cache_identity_mismatches(
+    cache: dict,
+    config: dict,
+    point: dict,
+    year: int,
+) -> list[str]:
+    identity = cache.get("identity")
+    if not isinstance(identity, dict):
+        return ["CACHE_IDENTITY_MISSING"]
+    expected_coordinate = {
+        "latitude": point.get("latitude"),
+        "longitude": point.get("longitude"),
+    }
+    expected = {
+        "namespace": history_cache_namespace(config),
+        "year": int(year),
+        "point_id": point.get("id"),
+        "source": "Open-Meteo",
+        "endpoint": OPEN_METEO_ENDPOINTS["history"],
+        "model": HISTORY_MODEL,
+        "model_parameter": HISTORY_MODEL_PARAMETER,
+        "requested_coordinate": expected_coordinate,
+        "cell_selection": "nearest",
+        "elevation": "nan",
+        "timezone": TIMEZONE_NAME,
+    }
+    mismatches = []
+    for key, expected_value in expected.items():
+        if identity.get(key) != expected_value:
+            mismatches.append(key)
+    grid = identity.get("returned_grid_coordinate")
+    if not valid_coordinate((grid or {}).get("latitude"), (grid or {}).get("longitude")):
+        mismatches.append("returned_grid_coordinate")
+    else:
+        expected_grid_key = f"{float(grid['latitude']):.6f},{float(grid['longitude']):.6f}"
+        if identity.get("grid_cell_key") != expected_grid_key:
+            mismatches.append("grid_cell_key")
+    distance = identity.get("grid_distance_km")
+    limit = identity.get("grid_distance_limit_km", HISTORY_GRID_QA_LIMIT_KM)
+    if (
+        not isinstance(distance, (int, float))
+        or isinstance(distance, bool)
+        or not math.isfinite(float(distance))
+        or distance < 0
+        or not isinstance(limit, (int, float))
+        or isinstance(limit, bool)
+        or not math.isfinite(float(limit))
+        or limit < 0
+        or distance > limit
+    ):
+        mismatches.append("grid_distance_km")
+    returned_elevation = identity.get("returned_elevation")
+    if (
+        not isinstance(returned_elevation, (int, float))
+        or isinstance(returned_elevation, bool)
+        or not math.isfinite(float(returned_elevation))
+    ):
+        mismatches.append("returned_elevation")
+    if identity.get("utc_offset_seconds") != 28800:
+        mismatches.append("utc_offset_seconds")
+    if identity.get("solar_variable") not in {None, "sunshine_duration", "shortwave_radiation"}:
+        mismatches.append("solar_variable")
+    if cache.get("cache_key") != history_cache_key(identity):
+        mismatches.append("cache_key")
+    qa = cache.get("record_metadata", {}).get("qa") or cache.get("qa") or {}
+    if qa.get("final_status") != "PASS":
+        mismatches.append("qa_final_status")
+    daily = cache.get("daily")
+    if not isinstance(daily, list):
+        mismatches.append("daily")
+    else:
+        seen_dates = set()
+        for day in daily:
+            day_date = day.get("date") if isinstance(day, dict) else None
+            if not isinstance(day_date, str):
+                mismatches.append("daily_date")
+                continue
+            try:
+                dt.date.fromisoformat(day_date)
+            except ValueError:
+                mismatches.append("daily_date")
+            else:
+                if day_date[:4] != str(year):
+                    mismatches.append("daily_year")
+            if day_date in seen_dates:
+                mismatches.append("duplicate_daily_date")
+            seen_dates.add(day_date)
+    return sorted(set(mismatches))
+
+
+def load_history_cache(
+    config: dict,
+    point: dict,
+    year: int,
+    cache_dir: Path | None = None,
+) -> tuple[dict | None, dict]:
+    """Load and validate one cache file; invalid identity is never silently used."""
+    path = history_cache_path(config, year, point["id"], cache_dir)
+    info = {
+        "path": history_cache_relative_path(path),
+        "status": "MISS",
+        "identity_mismatches": [],
+    }
+    if not path.is_file():
+        return None, info
+    try:
+        with path.open(encoding="utf-8") as handle:
+            cache = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        info.update({"status": "INVALID", "identity_mismatches": [f"CACHE_READ_FAILED:{type(error).__name__}"]})
+        return None, info
+    mismatches = _history_cache_identity_mismatches(cache, config, point, year)
+    if mismatches:
+        info.update({"status": "INVALID", "identity_mismatches": mismatches})
+        return None, info
+    info["status"] = "HIT"
+    info["cache_key"] = cache.get("cache_key")
+    info["cached_dates"] = len(cache.get("daily") or [])
+    return cache, info
+
+
+def _history_date_list(start_date: str, end_date: str) -> list[str]:
+    start = dt.date.fromisoformat(start_date)
+    end = dt.date.fromisoformat(end_date)
+    if end < start:
+        return []
+    return [
+        (start + dt.timedelta(days=offset)).isoformat()
+        for offset in range((end - start).days + 1)
+    ]
+
+
+def _history_missing_date_ranges(
+    start_date: str,
+    end_date: str,
+    cached_days: list[dict],
+) -> list[tuple[str, str]]:
+    cached_dates = {
+        day.get("date")
+        for day in cached_days
+        if isinstance(day, dict) and day.get("complete") and isinstance(day.get("date"), str)
+    }
+    missing = [
+        value for value in _history_date_list(start_date, end_date)
+        if value not in cached_dates
+    ]
+    ranges = []
+    for value in missing:
+        if not ranges:
+            ranges.append([value, value])
+            continue
+        previous = dt.date.fromisoformat(ranges[-1][1])
+        current = dt.date.fromisoformat(value)
+        if current == previous + dt.timedelta(days=1):
+            ranges[-1][1] = value
+        else:
+            ranges.append([value, value])
+    return [(start, end) for start, end in ranges]
+
+
+def _history_cache_merge_daily(cache: dict, new_daily: list[dict]) -> None:
+    by_date = {
+        day.get("date"): copy.deepcopy(day)
+        for day in cache.get("daily", [])
+        if isinstance(day, dict) and isinstance(day.get("date"), str)
+    }
+    for day in new_daily:
+        if isinstance(day, dict) and isinstance(day.get("date"), str):
+            by_date[day["date"]] = copy.deepcopy(day)
+    cache["daily"] = [by_date[key] for key in sorted(by_date)]
+    cache["cached_dates"] = sorted(by_date)
+    cache["date_range"] = {
+        "start_date": min(by_date) if by_date else None,
+        "end_date": max(by_date) if by_date else None,
+    }
+
+
+def _history_cache_record(
+    config: dict,
+    point: dict,
+    year: int,
+    cache: dict,
+    requested_start: str,
+    requested_end: str,
+    info: dict,
+) -> dict:
+    metadata = cache.get("record_metadata") or {}
+    daily = [
+        copy.deepcopy(day)
+        for day in cache.get("daily", [])
+        if isinstance(day, dict)
+        and isinstance(day.get("date"), str)
+        and requested_start <= day["date"] <= requested_end
+    ]
+    expected = _history_date_list(requested_start, requested_end)
+    available = {day["date"] for day in daily if day.get("complete")}
+    missing = [value for value in expected if value not in available]
+    qa = copy.deepcopy(metadata.get("qa") or {})
+    qa["cache_check"] = {
+        "status": "PASS" if not missing and info.get("status") not in {"INVALID", "FAILED"} else "INVALID",
+        "cache_path": info.get("path"),
+        "cache_key": cache.get("cache_key"),
+        "requested_start_date": requested_start,
+        "requested_end_date": requested_end,
+        "missing_dates": missing,
+        "identity_mismatches": info.get("identity_mismatches", []),
+    }
+    record_status = "PASS" if not missing and info.get("status") not in {"INVALID", "FAILED"} else "INVALID"
+    if record_status != "PASS":
+        qa["valid"] = False
+        qa["final_status"] = "INVALID"
+        qa["reason"] = (
+            "HISTORY_CACHE_IDENTITY_MISMATCH"
+            if info.get("status") == "INVALID" and info.get("identity_mismatches")
+            else "HISTORY_CACHE_MISSING_DATES"
+        )
+    else:
+        qa.setdefault("valid", True)
+        qa.setdefault("final_status", "PASS")
+    response = copy.deepcopy(metadata.get("response") or {})
+    request = copy.deepcopy(metadata.get("request") or {})
+    return {
+        "point_id": point.get("id"),
+        "point": copy.deepcopy(metadata.get("point") or point),
+        "status": record_status,
+        "source": metadata.get("source", "Open-Meteo"),
+        "endpoint": metadata.get("endpoint", OPEN_METEO_ENDPOINTS["history"]),
+        "model": metadata.get("model", HISTORY_MODEL),
+        "request": request,
+        "response": response,
+        "qa": qa,
+        "solar_variable": metadata.get("solar_variable"),
+        "daily": daily,
+        "history_cache": {
+            **copy.deepcopy(info),
+            "requested_start_date": requested_start,
+            "requested_end_date": requested_end,
+            "cached_start_date": (cache.get("date_range") or {}).get("start_date"),
+            "cached_end_date": (cache.get("date_range") or {}).get("end_date"),
+            "cached_complete_dates": len(available),
+            "missing_dates": missing,
+        },
+    }
+
+
+def _mark_history_cache_record_invalid(record: dict, info: dict, reason: str) -> dict:
+    result = copy.deepcopy(record)
+    result["status"] = "INVALID"
+    result["history_cache"] = copy.deepcopy(info)
+    result.setdefault("qa", {})["valid"] = False
+    result["qa"]["final_status"] = "INVALID"
+    result["qa"]["reason"] = reason
+    result.setdefault("error", {})["reason"] = reason
+    return result
+
+
+def history_cache_required_range(
+    config: dict,
+    point: dict,
+    year: int,
+    completed_date: dt.date,
+    forward_anchor_date: dt.date | None = None,
+) -> tuple[str, str] | None:
+    """Return the union needed by history comparison and (optionally) forward paths."""
+    region_config = config.get("regions", {}).get(point["region"], {})
+    history_start = region_config.get(
+        "history_start_month_day",
+        config.get("history_start_month_day", "08-25"),
+    )
+    history_range = history_date_range(completed_date, year, history_start)
+    ranges = [history_range] if history_range else []
+    if (
+        forward_anchor_date is not None
+        and config.get("namespace") != "ejina"
+        and year in HISTORY_FORWARD_YEARS
+    ):
+        forward_windows = history_forward_windows_for_year(forward_anchor_date, year)
+        forward_ranges = [
+            (item.get("start_date"), item.get("end_date"))
+            for item in forward_windows.values()
+            if item.get("status") == "OK" and item.get("start_date") and item.get("end_date")
+        ]
+        ranges.extend(forward_ranges)
+    ranges = [(start, end) for start, end in ranges if start and end]
+    if not ranges:
+        return None
+    return min(start for start, _ in ranges), max(end for _, end in ranges)
+
+
+def history_cache_record_or_fetch(
+    config: dict,
+    client: ApiClient,
+    point: dict,
+    year: int,
+    requested_start: str,
+    requested_end: str,
+    *,
+    refresh_history: bool = False,
+    cache_dir: Path | None = None,
+    log_label: str,
+) -> dict:
+    """Read a daily cache and fetch only missing contiguous dates from Open-Meteo."""
+    path = history_cache_path(config, year, point["id"], cache_dir)
+    cache, load_info = load_history_cache(config, point, year, cache_dir)
+    original_cache = cache
+    if load_info.get("status") == "INVALID" and not refresh_history:
+        info = {
+            **load_info,
+            "status": "INVALID",
+            "requested_start_date": requested_start,
+            "requested_end_date": requested_end,
+        }
+        return _history_cache_record(
+            config,
+            point,
+            year,
+            {"record_metadata": {}, "daily": [], "cache_key": None},
+            requested_start,
+            requested_end,
+            info,
+        )
+    if refresh_history:
+        ranges = [(requested_start, requested_end)]
+        mode = "refresh"
+    elif cache is None:
+        ranges = [(requested_start, requested_end)]
+        mode = "fill"
+    else:
+        ranges = _history_missing_date_ranges(requested_start, requested_end, cache.get("daily", []))
+        mode = "fill_missing"
+    info = {
+        "path": history_cache_relative_path(path),
+        "status": "HIT" if cache is not None and not ranges else "MISS",
+        "identity_mismatches": load_info.get("identity_mismatches", []),
+        "requested_start_date": requested_start,
+        "requested_end_date": requested_end,
+        "missing_date_count_before_fetch": sum(
+            len(_history_date_list(start, end)) for start, end in ranges
+        ),
+        "fetched_ranges": [],
+        "api_requests": 0,
+        "refresh_requested": refresh_history,
+    }
+    if cache is not None and not ranges:
+        info["status"] = "HIT"
+        return _history_cache_record(config, point, year, cache, requested_start, requested_end, info)
+
+    for fetch_start, fetch_end in ranges:
+        info["api_requests"] += 1
+        record = fetch_point(
+            client,
+            point=point,
+            source="Open-Meteo",
+            endpoint=OPEN_METEO_ENDPOINTS["history"],
+            model=HISTORY_MODEL,
+            params=base_weather_params(
+                point,
+                models=HISTORY_MODEL_PARAMETER,
+                start_date=fetch_start,
+                end_date=fetch_end,
+            ),
+            variables=HRES_VARIABLES,
+            required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
+            grid_limit_km=HISTORY_GRID_QA_LIMIT_KM,
+            log_label=f"{log_label} {fetch_start}/{fetch_end}",
+        )
+        if record.get("status") != "PASS":
+            info["status"] = "FAILED"
+            info["error"] = (record.get("error") or {}).get("reason", "OPEN_METEO_REQUEST_FAILED")
+            if cache is not None:
+                return _mark_history_cache_record_invalid(
+                    _history_cache_record(config, point, year, cache, requested_start, requested_end, info),
+                    info,
+                    "HISTORY_CACHE_MISSING_DATES_AFTER_FETCH_FAILURE",
+                )
+            return _mark_history_cache_record_invalid(record, info, "OPEN_METEO_REQUEST_FAILED")
+        new_daily = history_cache_daily(record)
+        new_identity = history_cache_identity(config, point, year, record)
+        candidate_cache = {
+            "cache_key": history_cache_key(new_identity),
+            "identity": new_identity,
+            "record_metadata": {"qa": record.get("qa") or {}},
+            "daily": new_daily,
+        }
+        candidate_mismatches = _history_cache_identity_mismatches(
+            candidate_cache,
+            config,
+            point,
+            year,
+        )
+        if candidate_mismatches:
+            info["status"] = "INVALID"
+            info["identity_mismatches"] = candidate_mismatches
+            return _mark_history_cache_record_invalid(record, info, "HISTORY_CACHE_IDENTITY_INVALID")
+        if cache is not None:
+            old_identity = cache.get("identity") or {}
+            identity_keys = (
+                "namespace", "year", "point_id", "source", "endpoint", "model",
+                "model_parameter", "requested_coordinate", "returned_grid_coordinate",
+                "returned_elevation", "grid_distance_km", "grid_distance_limit_km",
+                "grid_cell_key", "cell_selection", "elevation", "timezone",
+                "utc_offset_seconds", "solar_variable",
+            )
+            mismatches = [key for key in identity_keys if old_identity.get(key) != new_identity.get(key)]
+            if mismatches:
+                info["status"] = "INVALID"
+                info["identity_mismatches"] = mismatches
+                return _mark_history_cache_record_invalid(record, info, "HISTORY_CACHE_IDENTITY_MISMATCH")
+        if cache is None or refresh_history and original_cache is None:
+            cache = history_cache_from_record(
+                config,
+                point,
+                year,
+                record,
+                requested_start,
+                requested_end,
+                mode=mode,
+            )
+        else:
+            cache.setdefault("retrievals", []).append({
+                "retrieved_at": (record.get("response") or {}).get("retrieval_time") or iso_utc(dt.datetime.now(UTC)),
+                "requested_start_date": fetch_start,
+                "requested_end_date": fetch_end,
+                "mode": mode,
+                "status": "PASS",
+            })
+            cache["last_retrieval_time"] = cache["retrievals"][-1]["retrieved_at"]
+        if cache is not None:
+            _history_cache_merge_daily(cache, new_daily)
+            cache["last_request"] = {
+                "start_date": fetch_start,
+                "end_date": fetch_end,
+                "mode": mode,
+            }
+            write_json(path, cache)
+        info["fetched_ranges"].append({"start_date": fetch_start, "end_date": fetch_end})
+
+    info["status"] = "REFRESHED" if refresh_history else "FILLED"
+    return _history_cache_record(config, point, year, cache, requested_start, requested_end, info)
+
+
+def history_cache_stats() -> dict:
+    return {
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "cache_fills": 0,
+        "cache_refreshes": 0,
+        "cache_invalid": 0,
+        "cache_failed": 0,
+        "api_requests": 0,
+        "missing_dates_requested": 0,
+    }
+
+
+def update_history_cache_stats(stats: dict, record: dict) -> None:
+    info = record.get("history_cache") or {}
+    status = info.get("status")
+    if status == "HIT":
+        stats["cache_hits"] += 1
+    elif status == "MISS":
+        stats["cache_misses"] += 1
+    elif status == "FILLED":
+        stats["cache_fills"] += 1
+    elif status == "REFRESHED":
+        stats["cache_refreshes"] += 1
+    elif status == "INVALID":
+        stats["cache_invalid"] += 1
+    elif status == "FAILED":
+        stats["cache_failed"] += 1
+    stats["api_requests"] += int(info.get("api_requests", 0) or 0)
+    stats["missing_dates_requested"] += int(info.get("missing_date_count_before_fetch", 0) or 0)
+
+
+def run_history(
+    config: dict,
+    client: ApiClient,
+    generated_at: str,
+    data_date: str,
+    completed_date: dt.date,
+    *,
+    refresh_history: bool = False,
+    forward_anchor_date: dt.date | None = None,
+    cache_dir: Path | None = None,
+) -> dict:
     points = active_points(config)
     configured_years = history_years_for_config(config)
     point_results: dict[str, dict] = {}
     all_records = []
+    cache_stats = history_cache_stats()
     for point_id, point in points.items():
         region_config = config.get("regions", {}).get(point["region"], {})
         history_start = region_config.get(
@@ -917,39 +1540,69 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         years: dict[str, dict] = {}
         for year in configured_years:
             date_range = history_date_range(completed_date, year, history_start)
+            cache_range = history_cache_required_range(
+                config,
+                point,
+                year,
+                completed_date,
+                forward_anchor_date,
+            )
             if date_range is None:
-                record = invalid_record(
-                    point=point,
-                    source="Open-Meteo",
-                    endpoint=OPEN_METEO_ENDPOINTS["history"],
-                    model="ECMWF IFS 9 km historical weather / analysis",
-                    request_params={"models": "ecmwf_ifs", "year": year},
-                    reason="HISTORY_NOT_STARTED",
-                )
+                if cache_range is None:
+                    record = invalid_record(
+                        point=point,
+                        source="Open-Meteo",
+                        endpoint=OPEN_METEO_ENDPOINTS["history"],
+                        model=HISTORY_MODEL,
+                        request_params={"models": HISTORY_MODEL_PARAMETER, "year": year},
+                        reason="HISTORY_NOT_STARTED",
+                    )
+                else:
+                    record = history_cache_record_or_fetch(
+                        config,
+                        client,
+                        point,
+                        year,
+                        cache_range[0],
+                        cache_range[1],
+                        refresh_history=refresh_history,
+                        cache_dir=cache_dir,
+                        log_label=f"{point_id}:HISTORY {year}",
+                    )
+                    record["status"] = "INVALID"
+                    record.setdefault("qa", {})["valid"] = False
+                    record["qa"]["final_status"] = "INVALID"
+                    record["qa"]["reason"] = "HISTORY_NOT_STARTED"
+                    record["daily"] = []
             else:
                 start_date, end_date = date_range
-                record = fetch_point(
+                cache_range = cache_range or (start_date, end_date)
+                record = history_cache_record_or_fetch(
+                    config,
                     client,
-                    point=point,
-                    source="Open-Meteo",
-                    endpoint=OPEN_METEO_ENDPOINTS["history"],
-                    model="ECMWF IFS 9 km historical weather / analysis",
-                    params=base_weather_params(
-                        point,
-                        models="ecmwf_ifs",
-                        start_date=start_date,
-                        end_date=end_date,
-                    ),
-                    variables=HRES_VARIABLES,
-                    required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
-                    grid_limit_km=HISTORY_GRID_QA_LIMIT_KM,
+                    point,
+                    year,
+                    cache_range[0],
+                    cache_range[1],
+                    refresh_history=refresh_history,
+                    cache_dir=cache_dir,
                     log_label=f"{point_id}:HISTORY {year}",
                 )
                 if record.get("status") == "PASS":
-                    record["daily"] = daily_metrics(record["hourly"], record.get("solar_variable"))
                     log(f"[{point_id}] HISTORY {year} OK")
+                if record.get("daily") and date_range != cache_range:
+                    logical_start, logical_end = date_range
+                    record["daily"] = [
+                        day for day in record["daily"]
+                        if logical_start <= day.get("date", "") <= logical_end
+                    ]
+                    record.setdefault("history_cache", {})["logical_requested_range"] = {
+                        "start_date": logical_start,
+                        "end_date": logical_end,
+                    }
             years[str(year)] = record
             all_records.append(record)
+            update_history_cache_stats(cache_stats, record)
         point_results[point_id] = {
             "point_id": point_id,
             "point": {"name": point["name"], "region": point["region"], "status": point["status"]},
@@ -964,8 +1617,8 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         data_date,
         status,
         endpoint=OPEN_METEO_ENDPOINTS["history"],
-        model="ECMWF IFS 9 km historical weather / analysis",
-        model_parameter="ecmwf_ifs",
+        model=HISTORY_MODEL,
+        model_parameter=HISTORY_MODEL_PARAMETER,
         history_years=list(configured_years),
         period_start=" / ".join(
             f"{year}-{config.get('history_start_month_day', '08-25')}"
@@ -978,6 +1631,12 @@ def run_history(config: dict, client: ApiClient, generated_at: str, data_date: s
         excluded_points=excluded_points(config),
         successful_fetches=sum(record.get("status") == "PASS" for record in all_records),
         failed_fetches=sum(record.get("status") != "PASS" for record in all_records),
+        history_cache={
+            "enabled": True,
+            "directory": history_cache_relative_path(Path(cache_dir) if cache_dir is not None else HISTORY_CACHE_DIR),
+            "refresh_requested": refresh_history,
+            **cache_stats,
+        },
     )
 
 
@@ -1992,6 +2651,9 @@ def run_history_forward(
     generated_at: str,
     data_date: str,
     forecast_date: dt.date,
+    *,
+    refresh_history: bool = False,
+    cache_dir: Path | None = None,
 ) -> dict:
     """Fetch real weather after today's calendar date for Altay reference years."""
     if config.get("namespace") == "ejina":
@@ -2002,6 +2664,7 @@ def run_history_forward(
     point_results = {}
     all_records = []
     expected_point_ids = history_forward_point_ids(config)
+    cache_stats = history_cache_stats()
 
     for point_id in expected_point_ids:
         point = points[point_id]
@@ -2017,28 +2680,22 @@ def run_history_forward(
                     point=point,
                     source="Open-Meteo",
                     endpoint=OPEN_METEO_ENDPOINTS["history"],
-                    model="ECMWF IFS 9 km historical weather / analysis",
-                    request_params={"models": "ecmwf_ifs", "year": year},
+                    model=HISTORY_MODEL,
+                    request_params={"models": HISTORY_MODEL_PARAMETER, "year": year},
                     reason="HISTORY_FORWARD_AFTER_CUTOFF",
                 )
             else:
                 start_date = min(item["start_date"] for item in valid_window_ranges)
                 end_date = max(item["end_date"] for item in valid_window_ranges)
-                record = fetch_point(
+                record = history_cache_record_or_fetch(
+                    config,
                     client,
-                    point=point,
-                    source="Open-Meteo",
-                    endpoint=OPEN_METEO_ENDPOINTS["history"],
-                    model="ECMWF IFS 9 km historical weather / analysis",
-                    params=base_weather_params(
-                        point,
-                        models="ecmwf_ifs",
-                        start_date=start_date,
-                        end_date=end_date,
-                    ),
-                    variables=HRES_VARIABLES,
-                    required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
-                    grid_limit_km=HISTORY_GRID_QA_LIMIT_KM,
+                    point,
+                    year,
+                    start_date,
+                    end_date,
+                    refresh_history=refresh_history,
+                    cache_dir=cache_dir,
                     log_label=f"{point_id}:HISTORY_FORWARD {year}",
                 )
             record["window_definitions"] = year_windows
@@ -2056,6 +2713,7 @@ def run_history_forward(
                         record[key]["reason"] = "HISTORY_FORWARD_YEAR_INVALID"
             years[str(year)] = record
             all_records.append(record)
+            update_history_cache_stats(cache_stats, record)
         same_grid_qa = history_forward_same_grid_qa(years)
         windows_ok = all(
             all(years[str(year)].get(key, {}).get("status") == "OK" for key in HISTORY_FORWARD_WINDOW_KEYS)
@@ -2181,8 +2839,8 @@ def run_history_forward(
         data_date,
         module_status_value,
         endpoint=OPEN_METEO_ENDPOINTS["history"],
-        model="ECMWF IFS 9 km historical weather / analysis",
-        model_parameter="ecmwf_ifs",
+        model=HISTORY_MODEL,
+        model_parameter=HISTORY_MODEL_PARAMETER,
         history_years=list(HISTORY_FORWARD_YEARS),
         forecast_date=forecast_date.isoformat(),
         anchor_date=forecast_date.isoformat(),
@@ -2199,6 +2857,12 @@ def run_history_forward(
         kanas_aggregation=aggregation_metadata.get("kanas", {}),
         hemu_aggregation=aggregation_metadata.get("hemu", {}),
         subregion_aggregations=aggregation_metadata,
+        history_cache={
+            "enabled": True,
+            "directory": history_cache_relative_path(Path(cache_dir) if cache_dir is not None else HISTORY_CACHE_DIR),
+            "refresh_requested": refresh_history,
+            **cache_stats,
+        },
     )
 
 
@@ -2216,8 +2880,8 @@ def failed_history_forward_module(
         data_date,
         "FAILED",
         endpoint=OPEN_METEO_ENDPOINTS["history"],
-        model="ECMWF IFS 9 km historical weather / analysis",
-        model_parameter="ecmwf_ifs",
+        model=HISTORY_MODEL,
+        model_parameter=HISTORY_MODEL_PARAMETER,
         history_years=list(HISTORY_FORWARD_YEARS),
         forecast_date=forecast_date.isoformat(),
         anchor_date=forecast_date.isoformat(),
@@ -3628,11 +4292,15 @@ def long_range_overall(windows: list[dict]) -> dict:
 
 
 def run_long_range_reference(
+    config: dict,
     point: dict,
     client: ApiClient,
     origin_date: dt.date,
     generated_at: str,
     data_date: str,
+    *,
+    refresh_history: bool = False,
+    cache_dir: Path | None = None,
 ) -> dict:
     start_date = origin_date + dt.timedelta(days=LONG_RANGE_LEAD_START)
     end_date = origin_date + dt.timedelta(days=LONG_RANGE_LEAD_END)
@@ -3646,21 +4314,15 @@ def run_long_range_reference(
             "daily": [],
             "record": None,
         }
-    record = fetch_point(
+    record = history_cache_record_or_fetch(
+        config,
         client,
-        point=point,
-        source="Open-Meteo",
-        endpoint=OPEN_METEO_ENDPOINTS["history"],
-        model="ECMWF IFS 9 km historical weather / analysis",
-        params=base_weather_params(
-            point,
-            models="ecmwf_ifs",
-            start_date=reference_start.isoformat(),
-            end_date=reference_end.isoformat(),
-        ),
-        variables=["temperature_2m"],
-        required_variables=["temperature_2m"],
-        grid_limit_km=13.5,
+        point,
+        2025,
+        reference_start.isoformat(),
+        reference_end.isoformat(),
+        refresh_history=refresh_history,
+        cache_dir=cache_dir,
         log_label=f"{point['id']}:LONG_REFERENCE 2025",
     )
     if record.get("status") == "PASS":
@@ -3681,6 +4343,8 @@ def run_long_range(
     data_date: str,
     now_local: dt.datetime,
     archive_namespace: str | None = None,
+    refresh_history: bool = False,
+    cache_dir: Path | None = None,
 ) -> dict:
     points = active_points(config)
     forecast_records: dict[str, dict] = {}
@@ -3733,6 +4397,7 @@ def run_long_range(
     successful_points = 0
     partial_points = 0
     failed_points = 0
+    history_cache_info = history_cache_stats()
     forecast_horizons = []
     member_counts = []
     for region_id in core_region_ids(config):
@@ -3789,7 +4454,18 @@ def run_long_range(
         member_check = record.get("qa", {}).get("long_range_member_check", {})
         member_counts.extend(member_check.get("actual_member_counts_by_variable", {}).values())
         variable_horizon_partial = bool(member_check.get("edge_truncated_variables"))
-        reference = run_long_range_reference(point, client, origin_date, generated_at, data_date)
+        reference = run_long_range_reference(
+            config,
+            point,
+            client,
+            origin_date,
+            generated_at,
+            data_date,
+            refresh_history=refresh_history,
+            cache_dir=cache_dir,
+        )
+        if reference.get("record"):
+            update_history_cache_stats(history_cache_info, reference["record"])
         raw_references[region_id] = reference.get("record")
         reference_days = {day["date"]: day for day in reference.get("daily", [])}
         windows = build_long_range_windows(
@@ -3900,6 +4576,12 @@ def run_long_range(
         excluded_points=excluded_points(config),
         raw_references=raw_references,
         raw_points=forecast_records,
+        history_cache={
+            "enabled": True,
+            "directory": history_cache_relative_path(Path(cache_dir) if cache_dir is not None else HISTORY_CACHE_DIR),
+            "refresh_requested": refresh_history,
+            **history_cache_info,
+        },
         successful_points=successful_points,
         partial_points=partial_points,
         failed_points=failed_points,
@@ -5378,13 +6060,25 @@ def run_ejina_pipeline(
     generated_at: str,
     data_date: str,
     now_utc: dt.datetime,
+    *,
+    refresh_history: bool = False,
 ) -> dict:
     config = load_ejina_config()
     now_local = now_utc.astimezone(LOCAL_TZ)
     modules: dict[str, dict] = {}
     steps = (
         ("hres", run_hres),
-        ("history", lambda cfg, api, gen, day: run_history(cfg, api, gen, day, now_local.date() - dt.timedelta(days=1))),
+        (
+            "history",
+            lambda cfg, api, gen, day: run_history(
+                cfg,
+                api,
+                gen,
+                day,
+                now_local.date() - dt.timedelta(days=1),
+                refresh_history=refresh_history,
+            ),
+        ),
         ("gfs", run_gfs),
         ("ensemble", run_ensemble),
     )
@@ -5408,6 +6102,7 @@ def run_ejina_pipeline(
             data_date,
             now_local,
             archive_namespace="ejina",
+            refresh_history=refresh_history,
         )
     except Exception as error:
         modules["long_range"] = failed_module(
@@ -5718,7 +6413,11 @@ def minimal_failure_status(generated_at: str, reason: str) -> dict:
     }
 
 
-def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
+def run_pipeline(
+    now_utc: dt.datetime | None = None,
+    *,
+    refresh_history: bool = False,
+) -> dict:
     now_utc = (now_utc or dt.datetime.now(UTC)).astimezone(UTC)
     now_local = now_utc.astimezone(LOCAL_TZ)
     generated_at = iso_utc(now_utc)
@@ -5735,7 +6434,15 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
 
     log("PHASE 2: HISTORICAL IFS")
     try:
-        modules["history"] = run_history(config, client, generated_at, data_date, now_local.date() - dt.timedelta(days=1))
+        modules["history"] = run_history(
+            config,
+            client,
+            generated_at,
+            data_date,
+            now_local.date() - dt.timedelta(days=1),
+            refresh_history=refresh_history,
+            forward_anchor_date=now_local.date(),
+        )
     except Exception as error:
         modules["history"] = failed_module("history", generated_at, data_date, error)
 
@@ -5747,6 +6454,10 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
             generated_at,
             data_date,
             now_local.date(),
+            # run_history above refreshes the union needed by the forward
+            # paths, so reusing the cache here avoids a second API request in
+            # the same pipeline run.
+            refresh_history=False,
         )
     except Exception as error:
         modules["history_forward"] = failed_history_forward_module(
@@ -5783,7 +6494,16 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
 
     log("PHASE 8: GFS ENSEMBLE LONG RANGE")
     try:
-        modules["long_range"] = run_long_range(config, client, generated_at, data_date, now_local)
+        modules["long_range"] = run_long_range(
+            config,
+            client,
+            generated_at,
+            data_date,
+            now_local,
+            # Historical IFS and forward-path phases already warm the cache;
+            # the reference layer only fills dates outside that union.
+            refresh_history=False,
+        )
     except Exception as error:
         modules["long_range"] = failed_module(
             "long_range",
@@ -5880,7 +6600,13 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
         }
     log("PHASE 10: EJINA WEATHER NAMESPACE")
     try:
-        ejina = run_ejina_pipeline(client, generated_at, data_date, now_utc)
+        ejina = run_ejina_pipeline(
+            client,
+            generated_at,
+            data_date,
+            now_utc,
+            refresh_history=refresh_history,
+        )
     except Exception as error:
         log(f"[ejina] INITIALIZATION FAILED: {type(error).__name__}:{error}")
         ejina = ejina_failure_result(generated_at, data_date, error)
@@ -5918,9 +6644,19 @@ def run_pipeline(now_utc: dt.datetime | None = None) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--now", help="override current time with an ISO-8601 timestamp for reproducible runs")
+    parser.add_argument(
+        "--refresh-history",
+        action="store_true",
+        help="revalidate historical cache ranges against Open-Meteo before rebuilding outputs",
+    )
     args = parser.parse_args(argv)
+    refresh_history = args.refresh_history or os.environ.get("ALTAY_MONITOR_REFRESH_HISTORY", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     try:
-        run_pipeline(now_from_input(args.now))
+        run_pipeline(now_from_input(args.now), refresh_history=refresh_history)
         return 0
     except Exception as error:
         reason = f"{type(error).__name__}:{error}"
