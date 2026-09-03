@@ -3,8 +3,9 @@ name: Update Altay Weather Monitor
 on:
   workflow_dispatch:
   schedule:
-    # 08:00 Asia/Shanghai = 00:00 UTC. GitHub Actions cron is UTC.
-    - cron: "0 0 * * *"
+    # Run 17 minutes after the 00/06/12/18 UTC model cycles.
+    # Beijing times: 02:17, 08:17, 14:17, 20:17.
+    - cron: "17 0,6,12,18 * * *"
 
 permissions:
   contents: write
