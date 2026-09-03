@@ -212,7 +212,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 
 ## GitHub Actions 和本地运行
 
-`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并按 `00:00 UTC` 每日运行，即北京时间 `08:00`。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再请求 Open-Meteo，最后在 `permissions: contents: write` 下提交 `data/latest` 和 `data/archive`。
+`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并在 `00/06/12/18 UTC` 模型时次后第 17 分钟运行，即北京时间每天 `02:17、08:17、14:17、20:17`。17 分钟偏移用于避开整点负载；Open-Meteo 的实际到数时间仍可能因模型处理和服务器同步浮动。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再请求 Open-Meteo，最后在 `permissions: contents: write` 下提交 `data/latest` 和 `data/archive`。
 
 本地运行：
 
