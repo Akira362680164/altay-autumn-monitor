@@ -1,4 +1,5 @@
 import sys
+import copy
 import json
 import tempfile
 import unittest
@@ -1184,16 +1185,224 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertNotIn("raw_references", artifact)
         self.assertFalse(artifact["raw_hourly_included"])
 
-    def test_schema_is_additive_v110_and_long_range_contract_exists(self):
+    def test_schema_is_additive_v120_and_long_range_contract_exists(self):
         with (ROOT / "schemas" / "summary.schema.json").open(encoding="utf-8") as handle:
             summary_schema = json.load(handle)
         with (ROOT / "schemas" / "long_range.schema.json").open(encoding="utf-8") as handle:
             long_range_schema = json.load(handle)
-        self.assertEqual(summary_schema["properties"]["schema_version"]["const"], "1.1.0")
+        self.assertEqual(summary_schema["properties"]["schema_version"]["const"], "1.2.0")
         region_required = set(summary_schema["properties"]["regions"]["additionalProperties"]["required"])
         self.assertTrue({"forecast_0_7d", "forecast_8_15d", "forecast_16_35d"}.issubset(region_required))
         self.assertEqual(long_range_schema["properties"]["model_id"]["const"], "ncep_gefs05")
         self.assertEqual(long_range_schema["properties"]["expected_ensemble_members"]["const"], 31)
+
+    def test_weather_event_flags_window_metrics_and_mechanical_stress(self):
+        day = self.make_day("2026-09-01", -6)
+        day.update({"precipitation_mm": 2.0, "snowfall_cm": 0.5, "wind_gust_max_kmh": 70})
+        event = pipeline.derive_weather_event_day(day, "finalized_history")
+        for flag in (
+            "freeze",
+            "hard_freeze_le_minus5",
+            "gust_ge_50",
+            "gust_ge_65",
+            "rain_day",
+            "snow_day",
+            "rain_and_gust_ge_50",
+            "snow_and_gust_ge_50",
+            "freeze_and_snow",
+        ):
+            self.assertTrue(event[flag], flag)
+        self.assertEqual(event["mechanical_leaf_stress"]["level"], "HIGH")
+        self.assertIn("very_strong_wind", event["mechanical_leaf_stress"]["reasons"])
+        metrics = pipeline.weather_event_window_metrics([event])
+        self.assertEqual(metrics["precipitation_days"], 1)
+        self.assertEqual(metrics["snowfall_days"], 1)
+        self.assertEqual(metrics["gust_ge_50_days"], 1)
+        self.assertEqual(metrics["gust_ge_65_days"], 1)
+        self.assertEqual(metrics["freeze_and_snow_days"], 1)
+        self.assertEqual(metrics["wind_gust_max_kmh"], 70.0)
+        self.assertEqual(metrics["mechanical_leaf_stress"]["level"], "HIGH")
+
+    def test_weather_event_cache_backfill_hit_append_and_fingerprint_recompute(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        params = {
+            "models": "ecmwf_ifs",
+            "cell_selection": "nearest",
+            "elevation": "nan",
+            "timezone": "Asia/Shanghai",
+            "start_date": "2025-09-01",
+            "end_date": "2025-09-03",
+        }
+        record = self.make_history_forward_record(point, params)
+        source_cache = pipeline.history_cache_from_record(
+            config, point, 2025, record, params["start_date"], params["end_date"], mode="TEST"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            first, first_info = pipeline.update_weather_events_cache(
+                config, point, 2025, source_cache, "2026-09-11T00:00:00Z", cache_dir=cache_dir
+            )
+            self.assertEqual(first_info["status"], "FILLED")
+            self.assertEqual(first_info["cache_update"]["cache_fills"], 1)
+            self.assertEqual(first_info["cache_update"]["dates_added"], 3)
+            path = pipeline.weather_events_cache_path(config, 2025, "B1", cache_dir)
+            first_bytes = path.read_bytes()
+
+            second, second_info = pipeline.update_weather_events_cache(
+                config, point, 2025, source_cache, "2026-09-11T00:01:00Z", cache_dir=cache_dir
+            )
+            self.assertEqual(second_info["status"], "HIT")
+            self.assertEqual(second_info["cache_update"]["cache_hits"], 1)
+            self.assertEqual(path.read_bytes(), first_bytes)
+            self.assertEqual(len(second["daily"]), 3)
+
+            appended = copy.deepcopy(source_cache)
+            appended["daily"].append(self.make_day("2025-09-04", 3))
+            third, third_info = pipeline.update_weather_events_cache(
+                config, point, 2025, appended, "2026-09-11T00:02:00Z", cache_dir=cache_dir
+            )
+            self.assertEqual(third_info["status"], "UPDATED")
+            self.assertEqual(third_info["cache_update"]["dates_added"], 1)
+            self.assertEqual(len(third["daily"]), 4)
+
+            changed = copy.deepcopy(appended)
+            changed["daily"][1]["wind_gust_max_kmh"] = 71
+            fourth, fourth_info = pipeline.update_weather_events_cache(
+                config, point, 2025, changed, "2026-09-11T00:03:00Z", cache_dir=cache_dir
+            )
+            self.assertEqual(fourth_info["status"], "UPDATED")
+            self.assertEqual(fourth_info["cache_update"]["dates_recomputed"], 1)
+            self.assertEqual(fourth_info["cache_update"]["source_dates_changed"], 1)
+            self.assertEqual(fourth["daily"][1]["wind_gust_max_kmh"], 71.0)
+
+    def test_weather_event_cache_identity_mismatch_is_invalid_without_api_fetch(self):
+        config = pipeline.load_config()
+        point = pipeline.active_points(config)["B1"]
+        params = {
+            "models": "ecmwf_ifs",
+            "cell_selection": "nearest",
+            "elevation": "nan",
+            "timezone": "Asia/Shanghai",
+            "start_date": "2025-09-01",
+            "end_date": "2025-09-01",
+        }
+        source_cache = pipeline.history_cache_from_record(
+            config, point, 2025, self.make_history_forward_record(point, params), params["start_date"], params["end_date"], mode="TEST"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            pipeline.update_weather_events_cache(config, point, 2025, source_cache, "2026-09-11T00:00:00Z", cache_dir=cache_dir)
+            event_path = pipeline.weather_events_cache_path(config, 2025, "B1", cache_dir)
+            event_cache = json.loads(event_path.read_text(encoding="utf-8"))
+            event_cache["identity"]["timezone"] = "UTC"
+            event_path.write_text(json.dumps(event_cache), encoding="utf-8")
+            invalid, info = pipeline.update_weather_events_cache(
+                config, point, 2025, source_cache, "2026-09-11T00:01:00Z", cache_dir=cache_dir
+            )
+        self.assertIsNone(invalid)
+        self.assertEqual(info["status"], "INVALID")
+        self.assertIn("timezone", info["identity_mismatches"])
+
+    def test_weather_event_source_uses_unique_grid_max_gust_and_excludes_provisional(self):
+        config = pipeline.load_config()
+
+        def item(point_id, grid, temperature, gust):
+            point = config["points"][point_id]
+            day = self.make_day("2025-09-01", 2)
+            day.update({"temperature_mean_c": temperature, "temperature_min_c": temperature - 3, "temperature_max_c": temperature + 3, "night_min_c": temperature - 4, "wind_gust_max_kmh": gust})
+            event = pipeline.derive_weather_event_day(day, "finalized_history")
+            return {
+                "status": "OK",
+                "identity": {
+                    "requested_coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]},
+                    "returned_grid_coordinate": grid,
+                    "returned_elevation": 1800,
+                    "grid_distance_km": 2,
+                    "grid_distance_limit_km": pipeline.HISTORY_GRID_QA_LIMIT_KM,
+                    "grid_cell_key": f"{grid['latitude']},{grid['longitude']}",
+                    "timezone": "Asia/Shanghai",
+                    "model": pipeline.HISTORY_MODEL,
+                    "endpoint": pipeline.OPEN_METEO_ENDPOINTS["history"],
+                    "source": "Open-Meteo",
+                },
+                "qa": {"final_status": "PASS", "grid_distance_km": 2, "grid_distance_limit_km": pipeline.HISTORY_GRID_QA_LIMIT_KM},
+                "daily": [event],
+            }
+
+        source = {
+            "K1": item("K1", {"latitude": 48.75, "longitude": 87.0}, 10, 20),
+            "K2": item("K2", {"latitude": 48.7500001, "longitude": 87.0}, 10, 30),
+            "K3": item("K3", {"latitude": 48.5, "longitude": 87.0}, 0, 70),
+        }
+        result = pipeline.build_weather_event_source_summary(
+            config, ["K1", "K2", "K3"], source, source_state="finalized_history", minimum_verified_unique_grids=2
+        )
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["sampling"]["unique_model_grids"], 2)
+        self.assertEqual(result["metrics"]["temperature_mean_c"], 5.0)
+        self.assertEqual(result["metrics"]["wind_gust_max_kmh"], 70.0)
+        self.assertEqual(result["metrics"]["max_gust_source_point_id"], "K3")
+        self.assertEqual(result["metrics"]["max_gust_source_grid_cell_key"], "48.500000,87.000000")
+        provisional = pipeline.build_weather_event_source_summary(
+            config, ["K4", "K5", "K6"], {"K5": source["K1"]}, source_state="finalized_history"
+        )
+        self.assertEqual(provisional["sampling"]["excluded_point_ids"], ["K4", "K6"])
+        self.assertNotIn("K4", provisional["sampling"]["valid_point_ids"])
+
+    def test_cooling_episode_candidates_find_repeated_weather_cooling_and_ignore_small_noise(self):
+        values = [10, 10, 10, 7, 6, 10, 10, 10, 7, 6, 10, 10, 10, 10, 7, 6, 10]
+        days = []
+        for offset, value in enumerate(values):
+            day = self.make_day((date(2025, 9, 1) + timedelta(days=offset)).isoformat(), value - 2)
+            day["temperature_mean_c"] = value
+            day["temperature_min_c"] = value - 2
+            day["temperature_max_c"] = value + 2
+            day["night_min_c"] = value - 2
+            days.append(pipeline.derive_weather_event_day(day, "finalized_history"))
+        episodes = pipeline.cooling_episode_candidates(days)
+        self.assertEqual(len(episodes), 3)
+        self.assertEqual([item["start_date"] for item in episodes], ["2025-09-04", "2025-09-09", "2025-09-15"])
+        self.assertTrue(all(item["temperature_drop_c"] >= 3 for item in episodes))
+
+        noise = []
+        for offset, value in enumerate([10, 9.5, 10.2, 9.8, 10.1, 9.7, 10]):
+            day = self.make_day((date(2025, 9, 1) + timedelta(days=offset)).isoformat(), value - 2)
+            day["temperature_mean_c"] = value
+            day["night_min_c"] = value - 2
+            noise.append(pipeline.derive_weather_event_day(day, "finalized_history"))
+        self.assertEqual(pipeline.cooling_episode_candidates(noise), [])
+
+    def test_weather_events_failure_is_partial_and_does_not_hide_hres(self):
+        config = pipeline.load_config()
+        modules = {name: {"status": "OK"} for name in ("hres", "history", "ensemble", "gfs", "single_runs", "spatial_sampling")}
+        modules["history_forward"] = {"status": "OK"}
+        modules["long_range"] = {"status": "OK"}
+        modules["phenology_weather_summary"] = {"status": "OK"}
+        modules["weather_events"] = {"status": "FAILED", "error": "TEST_FAILURE"}
+        status = pipeline.build_status(config, "2026-09-11T00:00:00Z", "2026-09-10", modules)
+        self.assertEqual(status["pipeline_status"], "PARTIAL")
+        self.assertEqual(status["modules"]["hres"], "OK")
+        self.assertEqual(status["modules"]["weather_events"], "FAILED")
+
+    def test_weather_events_module_schema_is_valid(self):
+        module = pipeline.module_header(
+            "weather_events",
+            "2026-09-11T00:00:00Z",
+            "2026-09-10",
+            "FAILED",
+            source="Open-Meteo",
+            finalized_history={"source_state": "finalized_history"},
+            forecast={"source_state": "forecast", "historical_promotion_allowed": False},
+            regions={},
+            cooling_episode_candidates={},
+            weather_event_cache={"historical_api_requests": 0},
+            qa={"final_status": "FAILED"},
+            interpretation_boundary="Weather events only.",
+        )
+        with (ROOT / "schemas" / "weather_events.schema.json").open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        self.assertEqual(list(Draft202012Validator(schema).iter_errors(module)), [])
 
     def test_long_range_model_id_mismatch_is_rejected(self):
         payload = self.make_payload(model=pipeline.LONG_RANGE_MODEL)

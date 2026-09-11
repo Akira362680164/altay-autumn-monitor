@@ -51,19 +51,91 @@ jobs:
             python src/pipeline.py
           fi
 
+      - name: Check generated artifact freshness
+        id: artifacts
+        if: always() && steps.pipeline.outcome != 'skipped'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          latest = Path("data/latest")
+          required = [
+              "status.json",
+              "summary.json",
+              "hres.json",
+              "history_comparison.json",
+              "history_forward.json",
+              "ensemble.json",
+              "gfs.json",
+              "single_runs.json",
+              "spatial_sampling.json",
+              "long_range.json",
+              "phenology_weather_summary.json",
+              "weather_events.json",
+          ]
+          missing = [name for name in required if not (latest / name).is_file()]
+          if missing:
+              print("GENERATED_ARTIFACTS_MISSING:" + ",".join(missing))
+              raise SystemExit(1)
+          with (latest / "status.json").open(encoding="utf-8") as handle:
+              status = json.load(handle)
+          with (latest / "summary.json").open(encoding="utf-8") as handle:
+              summary = json.load(handle)
+          print("LATEST_GENERATED_AT=" + str(status.get("generated_at")))
+          print("LATEST_DATA_DATE=" + str(status.get("data_date")))
+          print("LATEST_PIPELINE_STATUS=" + str(status.get("pipeline_status")))
+          print("LATEST_MODULES=" + json.dumps(status.get("modules", {}), sort_keys=True))
+          if status.get("generated_at") != summary.get("generated_at"):
+              print("GENERATED_AT_MISMATCH=status.json vs summary.json")
+              raise SystemExit(1)
+          PY
+          echo "GIT_HEAD=$(git rev-parse HEAD)"
+          echo "GIT_BRANCH=$(git branch --show-current || true)"
+          git status --short
+
       - name: Commit generated data
         if: always()
         run: |
+          set -o pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.askPass ""
+          export GIT_TERMINAL_PROMPT=0
           git add data/latest data/archive data/cache
           if git diff --cached --quiet; then
             echo "No generated data changes to commit."
           else
+            echo "STAGED_GENERATED_DIFF:"
+            git diff --cached --stat
             git commit -m "chore: update weather data"
-            git push
+            echo "COMMIT_SHA=$(git rev-parse HEAD)"
+            if git push origin HEAD:main; then
+              echo "PUSH_OK"
+            else
+              echo "INITIAL_PUSH_FAILED; refreshing origin/main and retrying with rebase."
+              pushed=false
+              for attempt in 1 2 3; do
+                echo "PUSH_RETRY_ATTEMPT=$attempt"
+                git fetch origin main
+                if ! git rebase origin/main; then
+                  echo "REBASE_FAILED"
+                  git rebase --abort || true
+                  exit 1
+                fi
+                if git push origin HEAD:main; then
+                  echo "PUSH_OK_AFTER_REBASE"
+                  pushed=true
+                  break
+                fi
+              done
+              if [ "$pushed" != "true" ]; then
+                echo "PUSH_FAILED_AFTER_RETRIES"
+                exit 1
+              fi
+            fi
           fi
 
       - name: Surface unexpected pipeline failure
-        if: steps.pipeline.outcome == 'failure'
+        if: steps.pipeline.outcome == 'failure' || steps.artifacts.outcome == 'failure'
         run: exit 1

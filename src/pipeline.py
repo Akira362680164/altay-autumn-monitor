@@ -7,6 +7,7 @@ import argparse
 import copy
 import datetime as dt
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -34,11 +35,13 @@ EJINA_CONFIG_PATH = ROOT / "config" / "ejina_points.json"
 LATEST_DIR = ROOT / "data" / "latest"
 ARCHIVE_DIR = ROOT / "data" / "archive"
 HISTORY_CACHE_DIR = ROOT / "data" / "cache" / "history"
+WEATHER_EVENTS_CACHE_DIR = ROOT / "data" / "cache" / "weather_events"
 TIMEZONE_NAME = "Asia/Shanghai"
 LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
 UTC = dt.timezone.utc
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 LEGACY_SCHEMA_VERSION = "1.0.0"
+PREVIOUS_SCHEMA_VERSION = "1.1.0"
 RAW_RETENTION_DAYS = 14
 HRES_GRID_QA_LIMIT_KM = 14.0
 HISTORY_GRID_QA_LIMIT_KM = 13.5
@@ -87,6 +90,18 @@ DEFAULT_HISTORY_YEARS = (2025, 2026)
 HISTORY_FORWARD_YEARS = (2023, 2024, 2025)
 HISTORY_FORWARD_CUTOFF_MONTH_DAY = "10-06"
 HISTORY_FORWARD_WINDOW_KEYS = ("d0_7", "d8_15", "d16_to_10_06")
+ALTAY_WEATHER_EVENTS_CUTOFF = dt.date(2026, 10, 6)
+WEATHER_EVENTS_CACHE_SCHEMA_VERSION = "1.0.0"
+WEATHER_EVENT_RULE_VERSION = "weather_events_v1"
+COOLING_EPISODE_RULE_VERSION = "cooling_episode_v1"
+MECHANICAL_LEAF_STRESS_RULE_VERSION = "mechanical_leaf_stress_v1"
+COOLING_BASELINE_DAYS = 3
+COOLING_MIN_MEAN_DROP_C = 3.0
+COOLING_MIN_NIGHT_DROP_C = 2.0
+COOLING_ACTIVE_DAY_TOLERANCE_C = 1.0
+COOLING_RECOVERY_TOLERANCE_C = 0.5
+COOLING_MAX_RECOVERY_DAYS = 3
+COOLING_MIN_EPISODE_SEPARATION_DAYS = 2
 
 PRECISION_POLICIES = {
     "hres": [
@@ -186,7 +201,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         config = json.load(handle)
     if config.get("timezone") != TIMEZONE_NAME:
         raise ValueError(f"config timezone must be {TIMEZONE_NAME}")
-    if config.get("schema_version") not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if config.get("schema_version") not in {LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}:
         raise ValueError("unsupported points schema version")
     if config.get("namespace") != "ejina":
         validate_kanas_subregion_config(config)
@@ -1513,6 +1528,371 @@ def update_history_cache_stats(stats: dict, record: dict) -> None:
         stats["cache_failed"] += 1
     stats["api_requests"] += int(info.get("api_requests", 0) or 0)
     stats["missing_dates_requested"] += int(info.get("missing_date_count_before_fetch", 0) or 0)
+
+
+# ---------------------------------------------------------------------------
+# Derived weather-event cache and transparent weather heuristics
+# ---------------------------------------------------------------------------
+
+WEATHER_EVENT_SOURCE_KEYS = (
+    "date",
+    "complete",
+    "temperature_min_c",
+    "temperature_max_c",
+    "temperature_mean_c",
+    "night_min_c",
+    "precipitation_mm",
+    "snowfall_cm",
+    "wind_speed_mean_kmh",
+    "wind_gust_max_kmh",
+)
+WEATHER_EVENT_FLAG_KEYS = (
+    "freeze",
+    "hard_freeze_le_minus5",
+    "gust_ge_50",
+    "gust_ge_65",
+    "rain_day",
+    "snow_day",
+    "rain_and_gust_ge_50",
+    "snow_and_gust_ge_50",
+    "freeze_and_snow",
+)
+
+
+def weather_events_cache_path(
+    config: dict,
+    year: int,
+    point_id: str,
+    cache_dir: Path | None = None,
+) -> Path:
+    root = Path(cache_dir) if cache_dir is not None else WEATHER_EVENTS_CACHE_DIR
+    return root / history_cache_namespace(config) / str(year) / f"{point_id}.json"
+
+
+def weather_event_source_fingerprint(day: dict) -> str:
+    """Hash only the source daily values used by the derived event layer."""
+    values = {key: day.get(key) for key in WEATHER_EVENT_SOURCE_KEYS}
+    encoded = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _weather_event_flag(value: float | None, predicate) -> bool | None:
+    return predicate(value) if value is not None else None
+
+
+def mechanical_leaf_stress(day: dict) -> dict:
+    """Classify weather mechanical pressure; this is not a leaf-loss probability."""
+    gust = metric_value(day, "wind_gust_max_kmh")
+    rain = day.get("rain_day")
+    snow = day.get("snow_day")
+    freeze = day.get("freeze")
+    hard_freeze = day.get("hard_freeze_le_minus5")
+    reasons = []
+    if gust is not None and gust >= 65:
+        reasons.append("very_strong_wind")
+    elif gust is not None and gust >= 50:
+        reasons.append("strong_wind")
+    if rain is True and gust is not None and gust >= 50:
+        reasons.append("wind_plus_rain")
+    if snow is True and gust is not None and gust >= 50:
+        reasons.append("wind_plus_snow")
+    if hard_freeze is True and snow is True:
+        reasons.append("hard_freeze_plus_snow")
+    elif freeze is True and snow is True:
+        reasons.append("freeze_plus_snow")
+    if gust is not None and gust >= 65 or (hard_freeze is True and snow is True) or (snow is True and gust is not None and gust >= 50):
+        level = "HIGH"
+    elif (gust is not None and gust >= 50) or rain is True or snow is True or freeze is True:
+        level = "MEDIUM"
+    elif any(value is not None for value in (gust, rain, snow, freeze)):
+        level = "LOW"
+    else:
+        level = "UNDETERMINED"
+    return {
+        "level": level,
+        "reasons": reasons,
+        "rule_version": MECHANICAL_LEAF_STRESS_RULE_VERSION,
+    }
+
+
+def derive_weather_event_day(day: dict, source_state: str) -> dict:
+    """Convert one complete source daily row into a weather-only event row."""
+    if source_state not in {"finalized_history", "forecast"}:
+        raise ValueError(f"unsupported weather event source_state: {source_state}")
+    minimum = metric_value(day, "temperature_min_c")
+    maximum = metric_value(day, "temperature_max_c")
+    precipitation = metric_value(day, "precipitation_mm")
+    snowfall = metric_value(day, "snowfall_cm")
+    gust = metric_value(day, "wind_gust_max_kmh")
+    freeze = _weather_event_flag(minimum, lambda value: value < 0)
+    hard_freeze = _weather_event_flag(minimum, lambda value: value <= -5)
+    gust_50 = _weather_event_flag(gust, lambda value: value >= 50)
+    gust_65 = _weather_event_flag(gust, lambda value: value >= 65)
+    rain = _weather_event_flag(precipitation, lambda value: value > 0)
+    snow = _weather_event_flag(snowfall, lambda value: value > 0)
+    event = {
+        "date": day.get("date"),
+        "source_state": source_state,
+        "complete": bool(day.get("complete")),
+        "dtr_c": round(maximum - minimum, 3) if minimum is not None and maximum is not None else None,
+        "temperature_mean_c": metric_value(day, "temperature_mean_c"),
+        "temperature_min_c": minimum,
+        "temperature_max_c": maximum,
+        "night_min_c": metric_value(day, "night_min_c"),
+        "precipitation_mm": precipitation,
+        "snowfall_cm": snowfall,
+        "wind_speed_mean_kmh": metric_value(day, "wind_speed_mean_kmh"),
+        "wind_gust_max_kmh": gust,
+        "freeze": freeze,
+        "hard_freeze_le_minus5": hard_freeze,
+        "gust_ge_50": gust_50,
+        "gust_ge_65": gust_65,
+        "rain_day": rain,
+        "snow_day": snow,
+        "rain_and_gust_ge_50": True if rain is True and gust_50 is True else False if rain is not None and gust_50 is not None else None,
+        "snow_and_gust_ge_50": True if snow is True and gust_50 is True else False if snow is not None and gust_50 is not None else None,
+        "freeze_and_snow": True if freeze is True and snow is True else False if freeze is not None and snow is not None else None,
+        "source_fingerprint": weather_event_source_fingerprint(day),
+    }
+    event["mechanical_leaf_stress"] = mechanical_leaf_stress(event)
+    return event
+
+
+def weather_events_cache_identity(config: dict, point: dict, year: int, history_cache: dict) -> dict:
+    source_identity = copy.deepcopy(history_cache.get("identity") or {})
+    return {
+        "namespace": history_cache_namespace(config),
+        "year": int(year),
+        "point_id": point.get("id"),
+        "source": source_identity.get("source", "Open-Meteo"),
+        "endpoint": source_identity.get("endpoint", OPEN_METEO_ENDPOINTS["history"]),
+        "model": source_identity.get("model", HISTORY_MODEL),
+        "model_parameter": source_identity.get("model_parameter", HISTORY_MODEL_PARAMETER),
+        "requested_coordinate": copy.deepcopy(source_identity.get("requested_coordinate")),
+        "returned_grid_coordinate": copy.deepcopy(source_identity.get("returned_grid_coordinate")),
+        "returned_elevation": source_identity.get("returned_elevation"),
+        "grid_distance_km": source_identity.get("grid_distance_km"),
+        "grid_distance_limit_km": source_identity.get("grid_distance_limit_km", HISTORY_GRID_QA_LIMIT_KM),
+        "grid_cell_key": source_identity.get("grid_cell_key"),
+        "cell_selection": source_identity.get("cell_selection"),
+        "elevation": source_identity.get("elevation"),
+        "timezone": source_identity.get("timezone"),
+        "utc_offset_seconds": source_identity.get("utc_offset_seconds"),
+        "source_history_cache_key": history_cache.get("cache_key"),
+    }
+
+
+def _weather_events_cache_identity_mismatches(
+    cache: dict,
+    config: dict,
+    point: dict,
+    year: int,
+    history_cache: dict,
+) -> list[str]:
+    expected = weather_events_cache_identity(config, point, year, history_cache)
+    actual = cache.get("identity") if isinstance(cache.get("identity"), dict) else {}
+    mismatches = [
+        key for key, value in expected.items()
+        if actual.get(key) != value
+    ]
+    if cache.get("schema_version") not in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}:
+        mismatches.append("schema_version")
+    if cache.get("cache_schema_version") != WEATHER_EVENTS_CACHE_SCHEMA_VERSION:
+        mismatches.append("cache_schema_version")
+    if cache.get("cache_kind") != "derived_weather_events":
+        mismatches.append("cache_kind")
+    if cache.get("namespace") != history_cache_namespace(config):
+        mismatches.append("namespace")
+    try:
+        cache_year = int(cache.get("year", -1))
+    except (TypeError, ValueError):
+        cache_year = -1
+    if cache_year != int(year):
+        mismatches.append("year")
+    if cache.get("point_id") != point.get("id"):
+        mismatches.append("point_id")
+    daily = cache.get("daily")
+    if not isinstance(daily, list):
+        mismatches.append("daily")
+    else:
+        dates = [item.get("date") for item in daily if isinstance(item, dict)]
+        if any(not isinstance(value, str) for value in dates):
+            mismatches.append("daily_date")
+        if len(dates) != len(set(dates)):
+            mismatches.append("duplicate_daily_date")
+    fingerprints = cache.get("source_fingerprints_by_date")
+    if not isinstance(fingerprints, dict):
+        mismatches.append("source_fingerprints_by_date")
+    return sorted(set(mismatches))
+
+
+def load_weather_events_cache(
+    config: dict,
+    point: dict,
+    year: int,
+    history_cache: dict,
+    cache_dir: Path | None = None,
+) -> tuple[dict | None, dict]:
+    path = weather_events_cache_path(config, year, point["id"], cache_dir)
+    info = {"path": history_cache_relative_path(path), "status": "MISS", "identity_mismatches": []}
+    if not path.is_file():
+        return None, info
+    try:
+        with path.open(encoding="utf-8") as handle:
+            cache = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        info.update({"status": "INVALID", "identity_mismatches": [f"CACHE_READ_FAILED:{type(error).__name__}"]})
+        return None, info
+    mismatches = _weather_events_cache_identity_mismatches(cache, config, point, year, history_cache)
+    if mismatches:
+        info.update({"status": "INVALID", "identity_mismatches": mismatches})
+        return None, info
+    info.update({
+        "status": "HIT",
+        "cached_dates": len(cache.get("daily") or []),
+        "cache_key": cache.get("source_history_cache_key"),
+    })
+    return cache, info
+
+
+def weather_event_cache_stats() -> dict:
+    return {
+        "cache_hits": 0,
+        "cache_fills": 0,
+        "cache_invalid": 0,
+        "dates_added": 0,
+        "dates_recomputed": 0,
+        "source_dates_changed": 0,
+        "dates_removed": 0,
+        "files_written": 0,
+    }
+
+
+def update_weather_event_cache_stats(total: dict, item: dict) -> None:
+    stats = item.get("cache_update") or {}
+    for key in total:
+        total[key] += int(stats.get(key, 0) or 0)
+
+
+def _weather_events_cache_record(
+    config: dict,
+    point: dict,
+    year: int,
+    history_cache: dict,
+    daily: list[dict],
+    generated_at: str,
+    stats: dict,
+) -> dict:
+    identity = weather_events_cache_identity(config, point, year, history_cache)
+    fingerprints = {
+        item["date"]: item["source_fingerprint"]
+        for item in daily
+        if item.get("date") and item.get("source_fingerprint")
+    }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "cache_schema_version": WEATHER_EVENTS_CACHE_SCHEMA_VERSION,
+        "cache_kind": "derived_weather_events",
+        "namespace": history_cache_namespace(config),
+        "year": int(year),
+        "point_id": point.get("id"),
+        "source_history_cache_key": history_cache.get("cache_key"),
+        "source_history_cache_path": history_cache.get("_cache_path"),
+        "identity": identity,
+        "daily": daily,
+        "cached_dates": sorted(fingerprints),
+        "source_fingerprints_by_date": fingerprints,
+        "date_range": {
+            "start_date": min(fingerprints) if fingerprints else None,
+            "end_date": max(fingerprints) if fingerprints else None,
+        },
+        "rule_versions": {
+            "weather_event": WEATHER_EVENT_RULE_VERSION,
+            "cooling_episode": COOLING_EPISODE_RULE_VERSION,
+            "mechanical_leaf_stress": MECHANICAL_LEAF_STRESS_RULE_VERSION,
+        },
+        "cache_update": copy.deepcopy(stats),
+        "last_update": generated_at,
+    }
+
+
+def update_weather_events_cache(
+    config: dict,
+    point: dict,
+    year: int,
+    history_cache: dict,
+    generated_at: str,
+    *,
+    cache_dir: Path | None = None,
+) -> tuple[dict | None, dict]:
+    """Incrementally derive events from one validated Historical daily cache."""
+    source_days = [
+        copy.deepcopy(day)
+        for day in history_cache.get("daily", [])
+        if isinstance(day, dict)
+        and day.get("complete")
+        and isinstance(day.get("date"), str)
+        and day["date"].startswith(f"{int(year)}-")
+    ]
+    source_days.sort(key=lambda item: item["date"])
+    history_cache = copy.deepcopy(history_cache)
+    cache, load_info = load_weather_events_cache(config, point, year, history_cache, cache_dir)
+    stats = weather_event_cache_stats()
+    if load_info.get("status") == "INVALID":
+        stats["cache_invalid"] = 1
+        return None, {
+            "status": "INVALID",
+            "identity_mismatches": load_info.get("identity_mismatches", []),
+            "path": load_info.get("path"),
+            "cache_update": stats,
+        }
+    incoming_fingerprints = {
+        day["date"]: weather_event_source_fingerprint(day)
+        for day in source_days
+    }
+    old_fingerprints = (cache or {}).get("source_fingerprints_by_date") or {}
+    old_days = {
+        day.get("date"): copy.deepcopy(day)
+        for day in (cache or {}).get("daily", [])
+        if isinstance(day, dict) and isinstance(day.get("date"), str)
+    }
+    added_dates = sorted(set(incoming_fingerprints) - set(old_fingerprints))
+    changed_dates = sorted(
+        date_value
+        for date_value in set(incoming_fingerprints) & set(old_fingerprints)
+        if incoming_fingerprints[date_value] != old_fingerprints[date_value]
+    )
+    removed_dates = sorted(set(old_fingerprints) - set(incoming_fingerprints))
+    stats["dates_added"] = len(added_dates)
+    stats["dates_recomputed"] = len(changed_dates)
+    stats["source_dates_changed"] = len(changed_dates)
+    stats["dates_removed"] = len(removed_dates)
+    if cache is not None and not added_dates and not changed_dates and not removed_dates:
+        stats["cache_hits"] = 1
+        return cache, {
+            "status": "HIT",
+            "path": load_info.get("path"),
+            "cache_update": stats,
+        }
+    if cache is None:
+        stats["cache_fills"] = 1
+    recompute_dates = set(added_dates) | set(changed_dates)
+    for day in source_days:
+        if day["date"] in recompute_dates:
+            old_days[day["date"]] = derive_weather_event_day(day, "finalized_history")
+    for date_value in removed_dates:
+        old_days.pop(date_value, None)
+    derived_days = [old_days[key] for key in sorted(old_days)]
+    stats["files_written"] = 1
+    cache = _weather_events_cache_record(config, point, year, history_cache, derived_days, generated_at, stats)
+    path = weather_events_cache_path(config, year, point["id"], cache_dir)
+    write_json(path, cache)
+    cache["cache_update"] = copy.deepcopy(stats)
+    return cache, {
+        "status": "FILLED" if stats["cache_fills"] else "UPDATED",
+        "path": history_cache_relative_path(path),
+        "cache_update": stats,
+    }
 
 
 def run_history(
@@ -3008,6 +3388,1019 @@ def period_metrics(days: list[dict]) -> dict:
     metrics["period_start"] = complete_days[0]["date"] if complete_days else None
     metrics["period_end"] = complete_days[-1]["date"] if complete_days else None
     return metrics
+
+
+def weather_event_window_metrics(days: list[dict]) -> dict:
+    """Aggregate derived event rows without turning missing values into zeros."""
+    complete_days = sorted(
+        [day for day in days if day.get("complete") and day.get("date")],
+        key=lambda day: day["date"],
+    )
+
+    def values(key: str) -> list[float]:
+        return [
+            value for value in (metric_value(day, key) for day in complete_days)
+            if value is not None
+        ]
+
+    def count(flag: str) -> int:
+        return sum(day.get(flag) is True for day in complete_days)
+
+    gusts = values("wind_gust_max_kmh")
+    precipitation = values("precipitation_mm")
+    snowfall = values("snowfall_cm")
+    dtr = values("dtr_c")
+    wind_speed = values("wind_speed_mean_kmh")
+    maximum_gust = round(max(gusts), 3) if gusts else None
+    maximum_gust_day = next(
+        (day for day in complete_days if metric_value(day, "wind_gust_max_kmh") == maximum_gust),
+        None,
+    )
+    level_counts = {
+        level: sum(
+            (day.get("mechanical_leaf_stress") or {}).get("level") == level
+            for day in complete_days
+        )
+        for level in ("LOW", "MEDIUM", "HIGH")
+    }
+    stress_levels = [
+        (day.get("mechanical_leaf_stress") or {}).get("level")
+        for day in complete_days
+    ]
+    if "HIGH" in stress_levels:
+        stress_level = "HIGH"
+    elif "MEDIUM" in stress_levels:
+        stress_level = "MEDIUM"
+    elif "LOW" in stress_levels:
+        stress_level = "LOW"
+    else:
+        stress_level = "UNDETERMINED"
+    reasons = sorted({
+        reason
+        for day in complete_days
+        for reason in ((day.get("mechanical_leaf_stress") or {}).get("reasons") or [])
+    })
+    return {
+        "days_available": len(complete_days),
+        "period_start": complete_days[0]["date"] if complete_days else None,
+        "period_end": complete_days[-1]["date"] if complete_days else None,
+        "temperature_mean_c": safe_mean(values("temperature_mean_c")),
+        "temperature_min_mean_c": safe_mean(values("temperature_min_c")),
+        "temperature_max_mean_c": safe_mean(values("temperature_max_c")),
+        "night_min_mean_c": safe_mean(values("night_min_c")),
+        "absolute_min_night_c": round(min(values("night_min_c")), 3) if values("night_min_c") else None,
+        "precipitation_total_mm": safe_sum(precipitation),
+        "snowfall_total_cm": safe_sum(snowfall),
+        "precipitation_days": count("rain_day"),
+        "snowfall_days": count("snow_day"),
+        "max_daily_precipitation_mm": round(max(precipitation), 3) if precipitation else None,
+        "max_daily_snowfall_cm": round(max(snowfall), 3) if snowfall else None,
+        "wind_speed_mean_kmh": safe_mean(wind_speed),
+        "wind_gust_max_kmh": maximum_gust,
+        "max_gust_source_point_id": (maximum_gust_day or {}).get("max_gust_source_point_id"),
+        "max_gust_source_grid_cell_key": (maximum_gust_day or {}).get("max_gust_source_grid_cell_key"),
+        "gust_ge_50_days": count("gust_ge_50"),
+        "gust_ge_65_days": count("gust_ge_65"),
+        "rain_and_gust_ge_50_days": count("rain_and_gust_ge_50"),
+        "snow_and_gust_ge_50_days": count("snow_and_gust_ge_50"),
+        "freeze_and_snow_days": count("freeze_and_snow"),
+        "freeze_days": count("freeze"),
+        "hard_freeze_le_minus5_days": count("hard_freeze_le_minus5"),
+        "dtr_mean_c": safe_mean(dtr),
+        "dtr_max_c": round(max(dtr), 3) if dtr else None,
+        "combined_weather_stress_events": sum(level in {"MEDIUM", "HIGH"} for level in stress_levels),
+        "mechanical_leaf_stress": {
+            "level": stress_level,
+            "reasons": reasons,
+            "day_count_by_level": level_counts,
+            "rule_version": MECHANICAL_LEAF_STRESS_RULE_VERSION,
+        },
+    }
+
+
+def weather_event_window_summary(
+    days: list[dict],
+    definition: dict,
+    *,
+    allow_partial: bool = False,
+) -> dict:
+    if definition.get("status") != "OK" or not definition.get("start_date") or not definition.get("end_date"):
+        return {
+            "status": "UNAVAILABLE",
+            "start_date": definition.get("start_date"),
+            "end_date": definition.get("end_date"),
+            "expected_days": 0,
+            "days_available": 0,
+            "missing_dates": [],
+            "incomplete_dates": [],
+            "metrics": None,
+            "reason": definition.get("reason") or "WINDOW_UNAVAILABLE",
+        }
+    expected_dates = _history_date_list(definition["start_date"], definition["end_date"])
+    selected = [
+        day for day in days
+        if isinstance(day.get("date"), str)
+        and definition["start_date"] <= day["date"] <= definition["end_date"]
+    ]
+    complete_dates = {day["date"] for day in selected if day.get("complete")}
+    missing_dates = [value for value in expected_dates if value not in complete_dates]
+    incomplete_dates = sorted(
+        day["date"] for day in selected
+        if day.get("date") and not day.get("complete")
+    )
+    if not missing_dates and not incomplete_dates:
+        status = "OK"
+    elif complete_dates and allow_partial:
+        status = "PARTIAL"
+    else:
+        status = "INVALID"
+    return {
+        "status": status,
+        "start_date": definition["start_date"],
+        "end_date": definition["end_date"],
+        "expected_days": len(expected_dates),
+        "days_available": len(complete_dates),
+        "missing_dates": missing_dates,
+        "incomplete_dates": incomplete_dates,
+        "metrics": weather_event_window_metrics(selected) if complete_dates else None,
+        "reason": None if status == "OK" else "WEATHER_EVENT_WINDOW_INCOMPLETE",
+    }
+
+
+def mechanical_leaf_stress_window(days: list[dict]) -> dict:
+    metrics = weather_event_window_metrics(days)
+    return copy.deepcopy(metrics["mechanical_leaf_stress"])
+
+
+def cooling_episode_candidates(days: list[dict]) -> list[dict]:
+    """Find repeatable cooling candidates using a fixed three-day baseline."""
+    complete_days = sorted(
+        [day for day in days if day.get("complete") and day.get("date")],
+        key=lambda day: day["date"],
+    )
+    candidates = []
+    index = COOLING_BASELINE_DAYS
+    while index < len(complete_days):
+        baseline_days = complete_days[index - COOLING_BASELINE_DAYS:index]
+        baseline_dates = [dt.date.fromisoformat(day["date"]) for day in baseline_days]
+        if any(
+            baseline_dates[offset] != baseline_dates[offset - 1] + dt.timedelta(days=1)
+            for offset in range(1, len(baseline_dates))
+        ):
+            index += 1
+            continue
+        baseline_means = [metric_value(day, "temperature_mean_c") for day in baseline_days]
+        baseline_nights = [metric_value(day, "night_min_c") for day in baseline_days]
+        baseline_means = [value for value in baseline_means if value is not None]
+        baseline_nights = [value for value in baseline_nights if value is not None]
+        current_mean = metric_value(complete_days[index], "temperature_mean_c")
+        current_night = metric_value(complete_days[index], "night_min_c")
+        baseline_mean = safe_mean(baseline_means)
+        baseline_night = safe_mean(baseline_nights)
+        mean_drop = baseline_mean - current_mean if baseline_mean is not None and current_mean is not None else None
+        night_drop = baseline_night - current_night if baseline_night is not None and current_night is not None else None
+        triggered = (
+            mean_drop is not None and mean_drop >= COOLING_MIN_MEAN_DROP_C
+        ) or (
+            night_drop is not None and night_drop >= COOLING_MIN_NIGHT_DROP_C
+        )
+        if not triggered:
+            index += 1
+            continue
+        start_index = index
+        end_index = index
+        while end_index + 1 < len(complete_days):
+            previous_date = dt.date.fromisoformat(complete_days[end_index]["date"])
+            next_day = complete_days[end_index + 1]
+            next_date = dt.date.fromisoformat(next_day["date"])
+            if next_date != previous_date + dt.timedelta(days=1):
+                break
+            next_mean = metric_value(next_day, "temperature_mean_c")
+            next_night = metric_value(next_day, "night_min_c")
+            remains_cold = (
+                next_mean is not None
+                and baseline_mean is not None
+                and next_mean <= baseline_mean - COOLING_ACTIVE_DAY_TOLERANCE_C
+            ) or (
+                next_night is not None
+                and baseline_night is not None
+                and next_night <= baseline_night - COOLING_ACTIVE_DAY_TOLERANCE_C
+            )
+            if not remains_cold:
+                break
+            end_index += 1
+        recovery_index = None
+        for candidate_index in range(end_index + 1, min(len(complete_days), end_index + 1 + COOLING_MAX_RECOVERY_DAYS)):
+            candidate_day = complete_days[candidate_index]
+            previous_date = dt.date.fromisoformat(complete_days[candidate_index - 1]["date"])
+            candidate_date = dt.date.fromisoformat(candidate_day["date"])
+            if candidate_date != previous_date + dt.timedelta(days=1):
+                break
+            candidate_mean = metric_value(candidate_day, "temperature_mean_c")
+            candidate_night = metric_value(candidate_day, "night_min_c")
+            recovered = (
+                candidate_mean is not None
+                and baseline_mean is not None
+                and candidate_mean >= baseline_mean - COOLING_RECOVERY_TOLERANCE_C
+            ) or (
+                candidate_night is not None
+                and baseline_night is not None
+                and candidate_night >= baseline_night - COOLING_RECOVERY_TOLERANCE_C
+            )
+            if recovered:
+                recovery_index = candidate_index
+                break
+        event_days = complete_days[start_index:end_index + 1]
+        start_date = event_days[0]["date"]
+        end_date = event_days[-1]["date"]
+        if candidates:
+            previous_end = dt.date.fromisoformat(candidates[-1]["end_date"])
+            if (dt.date.fromisoformat(start_date) - previous_end).days <= COOLING_MIN_EPISODE_SEPARATION_DAYS:
+                index = end_index + 1
+                continue
+        metrics = weather_event_window_metrics(event_days)
+        episode = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "baseline_temperature_mean_c": baseline_mean,
+            "minimum_daily_mean_c": min((metric_value(day, "temperature_mean_c") for day in event_days if metric_value(day, "temperature_mean_c") is not None), default=None),
+            "minimum_night_min_c": min((metric_value(day, "night_min_c") for day in event_days if metric_value(day, "night_min_c") is not None), default=None),
+            "temperature_drop_c": round(
+                baseline_mean - min((metric_value(day, "temperature_mean_c") for day in event_days if metric_value(day, "temperature_mean_c") is not None), default=baseline_mean),
+                3,
+            ) if baseline_mean is not None else None,
+            "dtr_mean_c": metrics.get("dtr_mean_c"),
+            "dtr_max_c": metrics.get("dtr_max_c"),
+            "precipitation_total_mm": metrics.get("precipitation_total_mm"),
+            "snowfall_total_cm": metrics.get("snowfall_total_cm"),
+            "wind_gust_max_kmh": metrics.get("wind_gust_max_kmh"),
+            "gust_ge_50_days": metrics.get("gust_ge_50_days", 0),
+            "gust_ge_65_days": metrics.get("gust_ge_65_days", 0),
+            "rain_and_gust_ge_50_days": metrics.get("rain_and_gust_ge_50_days", 0),
+            "snow_and_gust_ge_50_days": metrics.get("snow_and_gust_ge_50_days", 0),
+            "freeze_days": metrics.get("freeze_days", 0),
+            "hard_freeze_days": metrics.get("hard_freeze_le_minus5_days", 0),
+            "recovery_status": "OBSERVED" if recovery_index is not None else "NOT_YET_OBSERVED",
+            "rule_version": COOLING_EPISODE_RULE_VERSION,
+        }
+        candidates.append(episode)
+        index = end_index + 1
+    return candidates
+
+
+def _weather_event_identity_record(item: dict, point_id: str) -> dict:
+    """Rebuild a compact grid record for the existing deduplication helpers."""
+    identity = item.get("identity") or {}
+    qa = item.get("qa") or {}
+    return {
+        "point_id": point_id,
+        "status": "PASS" if item.get("status") == "OK" else "INVALID",
+        "source": item.get("source", identity.get("source", "Open-Meteo")),
+        "endpoint": item.get("endpoint", identity.get("endpoint")),
+        "model": item.get("model", identity.get("model")),
+        "request": {
+            "coordinate": copy.deepcopy(identity.get("requested_coordinate")),
+            "parameters": copy.deepcopy(item.get("request_parameters") or {}),
+        },
+        "response": {
+            "grid_coordinate": copy.deepcopy(identity.get("returned_grid_coordinate")),
+            "returned_elevation": identity.get("returned_elevation"),
+            "timezone": identity.get("timezone"),
+            "utc_offset_seconds": identity.get("utc_offset_seconds"),
+        },
+        "qa": {
+            "final_status": qa.get("final_status", "PASS" if item.get("status") == "OK" else "INVALID"),
+            "grid_distance_km": qa.get("grid_distance_km", identity.get("grid_distance_km")),
+            "grid_distance_limit_km": qa.get("grid_distance_limit_km", identity.get("grid_distance_limit_km")),
+        },
+        "daily": copy.deepcopy(item.get("daily") or []),
+    }
+
+
+def _weather_event_item_from_history_cache(
+    config: dict,
+    point: dict,
+    year: int,
+    history_cache: dict,
+    cache_update: dict,
+) -> dict:
+    identity = copy.deepcopy(history_cache.get("identity") or {})
+    metadata = history_cache.get("record_metadata") or {}
+    qa = copy.deepcopy(metadata.get("qa") or {})
+    daily = copy.deepcopy(history_cache.get("daily") or [])
+    return {
+        "status": "OK" if qa.get("final_status") == "PASS" else "INVALID",
+        "source_state": "finalized_history",
+        "year": int(year),
+        "point_id": point.get("id"),
+        "source": identity.get("source", "Open-Meteo"),
+        "endpoint": identity.get("endpoint", OPEN_METEO_ENDPOINTS["history"]),
+        "model": identity.get("model", HISTORY_MODEL),
+        "request_parameters": copy.deepcopy((metadata.get("request") or {}).get("parameters") or {}),
+        "identity": identity,
+        "qa": qa,
+        "daily": daily,
+        "metrics": weather_event_window_metrics(daily),
+        "cache_update": copy.deepcopy(cache_update),
+    }
+
+
+def _weather_event_item_from_forecast_record(point: dict, record: dict, cutoff_date: dt.date | None) -> dict:
+    response = record.get("response") or {}
+    qa = copy.deepcopy(record.get("qa") or {})
+    daily = []
+    for day in record.get("daily") or []:
+        value = day.get("date")
+        try:
+            keep = cutoff_date is None or dt.date.fromisoformat(value) <= cutoff_date
+        except (TypeError, ValueError):
+            keep = False
+        if keep:
+            daily.append(derive_weather_event_day(day, "forecast"))
+    identity = {
+        "namespace": "altay",
+        "point_id": point.get("id"),
+        "source": record.get("source", "Open-Meteo"),
+        "endpoint": record.get("endpoint"),
+        "model": record.get("model"),
+        "requested_coordinate": copy.deepcopy((record.get("request") or {}).get("coordinate")),
+        "returned_grid_coordinate": copy.deepcopy(response.get("grid_coordinate")),
+        "returned_elevation": response.get("returned_elevation"),
+        "grid_distance_km": qa.get("grid_distance_km"),
+        "grid_distance_limit_km": qa.get("grid_distance_limit_km"),
+        "grid_cell_key": record_grid_cell_key(record),
+        "cell_selection": ((record.get("request") or {}).get("parameters") or {}).get("cell_selection"),
+        "elevation": ((record.get("request") or {}).get("parameters") or {}).get("elevation"),
+        "timezone": response.get("timezone"),
+        "utc_offset_seconds": response.get("utc_offset_seconds"),
+    }
+    return {
+        "status": "OK" if record.get("status") == "PASS" and qa.get("final_status", "PASS") == "PASS" else "INVALID",
+        "source_state": "forecast",
+        "point_id": point.get("id"),
+        "source": record.get("source", "Open-Meteo"),
+        "endpoint": record.get("endpoint"),
+        "model": record.get("model"),
+        "request_parameters": copy.deepcopy((record.get("request") or {}).get("parameters") or {}),
+        "response": copy.deepcopy(response),
+        "identity": identity,
+        "qa": qa,
+        "daily": daily,
+        "metrics": weather_event_window_metrics(daily),
+    }
+
+
+def _aggregate_weather_event_grid_days(unique_entries: list[dict], source_state: str) -> list[dict]:
+    by_date: dict[str, list[tuple[dict, dict]]] = {}
+    for entry in unique_entries:
+        record = entry.get("record") or {}
+        for day in record.get("daily") or []:
+            if day.get("date"):
+                by_date.setdefault(day["date"], []).append((day, entry))
+    continuous_keys = (
+        "temperature_mean_c",
+        "temperature_min_c",
+        "temperature_max_c",
+        "night_min_c",
+        "dtr_c",
+        "precipitation_mm",
+        "snowfall_cm",
+        "wind_speed_mean_kmh",
+    )
+    output = []
+    total_grids = len(unique_entries)
+    for day_date in sorted(by_date):
+        rows = by_date[day_date]
+        item = {
+            "date": day_date,
+            "source_state": source_state,
+            "complete": total_grids > 0 and len(rows) == total_grids and all(day.get("complete") for day, _ in rows),
+            "available_grid_count": len(rows),
+            "total_unique_grid_count": total_grids,
+        }
+        for key in continuous_keys:
+            values = [metric_value(day, key) for day, _ in rows]
+            values = [value for value in values if value is not None]
+            item[key] = safe_mean(values)
+        gust_rows = [
+            (metric_value(day, "wind_gust_max_kmh"), entry)
+            for day, entry in rows
+            if metric_value(day, "wind_gust_max_kmh") is not None
+        ]
+        if gust_rows:
+            gust, gust_entry = max(gust_rows, key=lambda value: value[0])
+            item["wind_gust_max_kmh"] = round(gust, 3)
+            item["max_gust_source_point_id"] = gust_entry.get("representative_point_id")
+            item["max_gust_source_grid_cell_key"] = gust_entry.get("grid_cell_id")
+        else:
+            item["wind_gust_max_kmh"] = None
+            item["max_gust_source_point_id"] = None
+            item["max_gust_source_grid_cell_key"] = None
+        event_counts = {}
+        for flag in WEATHER_EVENT_FLAG_KEYS:
+            flag_values = [day.get(flag) for day, _ in rows if day.get(flag) is not None]
+            triggered = sum(value is True for value in flag_values)
+            event_counts[flag] = {
+                "any_grid_event": True if triggered else False if flag_values else None,
+                "triggered_unique_grid_count": triggered,
+                "total_unique_grid_count": total_grids,
+            }
+            item[flag] = event_counts[flag]["any_grid_event"]
+        item["event_counts"] = event_counts
+        item["mechanical_leaf_stress"] = mechanical_leaf_stress(item)
+        output.append(item)
+    return output
+
+
+def _equal_mean_weather_event_days(items: list[dict], source_state: str) -> list[dict]:
+    by_date: dict[str, list[dict]] = {}
+    for item in items:
+        for day in item.get("daily") or []:
+            if day.get("date"):
+                by_date.setdefault(day["date"], []).append(day)
+    continuous_keys = (
+        "temperature_mean_c",
+        "temperature_min_c",
+        "temperature_max_c",
+        "night_min_c",
+        "dtr_c",
+        "precipitation_mm",
+        "snowfall_cm",
+        "wind_speed_mean_kmh",
+    )
+    output = []
+    for day_date in sorted(by_date):
+        rows = by_date[day_date]
+        item = {
+            "date": day_date,
+            "source_state": source_state,
+            "complete": bool(rows) and len(rows) == len(items) and all(day.get("complete") for day in rows),
+            "available_subregion_count": len(rows),
+            "total_subregion_count": len(items),
+        }
+        for key in continuous_keys:
+            values = [metric_value(day, key) for day in rows]
+            item[key] = safe_mean([value for value in values if value is not None])
+        gust_rows = [
+            (metric_value(day, "wind_gust_max_kmh"), day)
+            for day in rows
+            if metric_value(day, "wind_gust_max_kmh") is not None
+        ]
+        if gust_rows:
+            gust, gust_day = max(gust_rows, key=lambda value: value[0])
+            item["wind_gust_max_kmh"] = round(gust, 3)
+            item["max_gust_source_point_id"] = gust_day.get("max_gust_source_point_id")
+            item["max_gust_source_grid_cell_key"] = gust_day.get("max_gust_source_grid_cell_key")
+        else:
+            item["wind_gust_max_kmh"] = None
+            item["max_gust_source_point_id"] = None
+            item["max_gust_source_grid_cell_key"] = None
+        event_counts = {}
+        for flag in WEATHER_EVENT_FLAG_KEYS:
+            triggered = sum(
+                int(((day.get("event_counts") or {}).get(flag) or {}).get("triggered_unique_grid_count", 0) or 0)
+                for day in rows
+            )
+            total = sum(
+                int(((day.get("event_counts") or {}).get(flag) or {}).get("total_unique_grid_count", 0) or 0)
+                for day in rows
+            )
+            if total == 0:
+                # A one-point source row has no nested grid counts only when
+                # it came from a malformed fixture; preserve uncertainty.
+                values = [day.get(flag) for day in rows if day.get(flag) is not None]
+                triggered = sum(value is True for value in values)
+                total = len(values)
+            event_counts[flag] = {
+                "any_grid_event": True if triggered else False if total else None,
+                "triggered_unique_grid_count": triggered,
+                "total_unique_grid_count": total,
+            }
+            item[flag] = event_counts[flag]["any_grid_event"]
+        item["event_counts"] = event_counts
+        item["mechanical_leaf_stress"] = mechanical_leaf_stress(item)
+        output.append(item)
+    return output
+
+
+def build_weather_event_source_summary(
+    config: dict,
+    point_ids: list[str],
+    source_items: dict[str, dict],
+    *,
+    source_state: str,
+    minimum_verified_unique_grids: int = 1,
+    forecast_date: dt.date | None = None,
+) -> dict:
+    records = {
+        point_id: _weather_event_identity_record(item, point_id)
+        for point_id, item in source_items.items()
+        if item.get("status") == "OK"
+    }
+    sampling = grid_sampling_summary(
+        config,
+        point_ids,
+        records,
+        minimum_verified_unique_grids=minimum_verified_unique_grids,
+    )
+    unique_entries = deduplicate_grid_records(list(records.values()))
+    daily = _aggregate_weather_event_grid_days(unique_entries, source_state)
+    status = "INVALID"
+    if unique_entries:
+        status = "OK" if sampling.get("status") == "OK" and all(item.get("status") == "OK" for item in source_items.values()) else "PARTIAL"
+    result = {
+        "status": status,
+        "source_state": source_state,
+        "point_ids": list(point_ids),
+        "daily": daily,
+        "metrics": weather_event_window_metrics(daily) if daily else None,
+        "sampling": sampling,
+        "unique_grid_count": len(unique_entries),
+    }
+    if forecast_date is not None:
+        definitions = {
+            item["window"]: item
+            for item in history_forward_window_definitions(forecast_date)
+        }
+        result["windows"] = {
+            key: weather_event_window_summary(daily, definition, allow_partial=True)
+            for key, definition in definitions.items()
+        }
+    return result
+
+
+def build_weather_event_composite(
+    subregion_summaries: dict[str, dict],
+    subregion_keys: tuple[str, ...],
+    *,
+    source_state: str,
+    forecast_date: dt.date | None = None,
+    region_id: str,
+) -> dict:
+    items = [subregion_summaries[key] for key in subregion_keys if key in subregion_summaries]
+    daily = _equal_mean_weather_event_days(items, source_state) if items else []
+    statuses = [item.get("status") for item in items]
+    if not items:
+        status = "INVALID"
+    elif all(value == "OK" for value in statuses) and daily:
+        status = "OK"
+    elif any(value in {"OK", "PARTIAL"} for value in statuses) and daily:
+        status = "PARTIAL"
+    else:
+        status = "INVALID"
+    result = {
+        "status": status,
+        "source_state": source_state,
+        "daily": daily,
+        "metrics": weather_event_window_metrics(daily) if daily else None,
+        "aggregation": f"equal_mean_of_{region_id}_subregions; no point-count weighting; gust=max_over_unique_grids",
+        "subregion_statuses": {key: subregion_summaries.get(key, {}).get("status", "INVALID") for key in subregion_keys},
+        "missing_or_partial_subregions": [key for key in subregion_keys if subregion_summaries.get(key, {}).get("status") != "OK"],
+    }
+    if forecast_date is not None:
+        definitions = {item["window"]: item for item in history_forward_window_definitions(forecast_date)}
+        result["windows"] = {
+            key: weather_event_window_summary(daily, definition, allow_partial=True)
+            for key, definition in definitions.items()
+        }
+    return result
+
+
+def weather_event_point_same_grid_qa(
+    config: dict,
+    point_id: str,
+    year_items: dict[str, dict],
+) -> dict:
+    configured_years = history_years_for_config(config)
+    records = {
+        str(year): _weather_event_identity_record(year_items.get(str(year), {}), point_id)
+        for year in configured_years
+    }
+    result = historical_same_grid_qa(records, configured_years)
+    year_qa = {}
+    failed_years = []
+    for year in configured_years:
+        item = year_items.get(str(year)) or {}
+        identity = item.get("identity") or {}
+        qa = item.get("qa") or {}
+        distance = qa.get("grid_distance_km", identity.get("grid_distance_km"))
+        distance_ok = isinstance(distance, (int, float)) and not isinstance(distance, bool) and distance <= HISTORY_GRID_QA_LIMIT_KM
+        item_ok = item.get("status") == "OK" and qa.get("final_status", "PASS") == "PASS" and distance_ok
+        year_qa[str(year)] = {
+            "status": "PASS" if item_ok else "FAILED",
+            "returned_grid_coordinate": identity.get("returned_grid_coordinate"),
+            "returned_elevation": identity.get("returned_elevation"),
+            "grid_distance_km": distance,
+            "grid_distance_limit_km": identity.get("grid_distance_limit_km", HISTORY_GRID_QA_LIMIT_KM),
+            "timezone": identity.get("timezone"),
+            "model": identity.get("model"),
+            "source_history_cache_key": item.get("source_history_cache_key"),
+            "api_request_metadata": {
+                "endpoint": identity.get("endpoint"),
+                "requested_coordinate": identity.get("requested_coordinate"),
+                "model_parameter": identity.get("model_parameter"),
+                "cell_selection": identity.get("cell_selection"),
+                "elevation": identity.get("elevation"),
+                "timezone": identity.get("timezone"),
+            },
+        }
+        if not item_ok:
+            failed_years.append(str(year))
+    result["year_qa"] = year_qa
+    if failed_years or result.get("final_status") != "PASS":
+        result["final_status"] = "FAILED"
+        result["status"] = "FAIL"
+        result["reason"] = (
+            "WEATHER_EVENT_HISTORY_YEAR_QA_FAILED:" + ",".join(failed_years)
+            if failed_years
+            else result.get("reason") or "WEATHER_EVENT_HISTORY_GRID_QA_FAILED"
+        )
+    result["cross_year_comparison_usable"] = result["final_status"] == "PASS"
+    return result
+
+
+def _weather_event_region_source(
+    config: dict,
+    region_id: str,
+    point_ids: list[str],
+    source_items: dict[str, dict],
+    *,
+    source_state: str,
+    forecast_date: dt.date | None = None,
+    minimum_verified_unique_grids: int = 1,
+) -> dict:
+    return build_weather_event_source_summary(
+        config,
+        point_ids,
+        source_items,
+        source_state=source_state,
+        minimum_verified_unique_grids=minimum_verified_unique_grids,
+        forecast_date=forecast_date,
+    )
+
+
+def build_weather_event_region(
+    config: dict,
+    region_id: str,
+    historical_items: dict[str, dict[str, dict]],
+    forecast_items: dict[str, dict],
+    forecast_date: dt.date,
+    point_same_grid_qa: dict[str, dict],
+) -> dict:
+    region_config = config.get("regions", {}).get(region_id, {})
+    if region_id in SUBREGION_KEYS_BY_REGION and region_subregion_registry(config, region_id):
+        subregions = {}
+        for subregion_id in SUBREGION_KEYS_BY_REGION[region_id]:
+            registry_item = region_subregion_registry(config, region_id).get(subregion_id) or {}
+            point_ids = region_subregion_point_ids(config, region_id, subregion_id)
+            verified_ids = region_subregion_point_ids(config, region_id, subregion_id, verified_only=True)
+            historical_years = {}
+            for year in history_years_for_config(config):
+                source_items = {
+                    point_id: historical_items.get(point_id, {}).get(str(year), {})
+                    for point_id in verified_ids
+                    if historical_items.get(point_id, {}).get(str(year))
+                }
+                historical_years[str(year)] = _weather_event_region_source(
+                    config,
+                    region_id,
+                    point_ids,
+                    source_items,
+                    source_state="finalized_history",
+                    minimum_verified_unique_grids=registry_item.get("minimum_verified_unique_grids", 1),
+                )
+            forecast_source_items = {
+                point_id: forecast_items[point_id]
+                for point_id in verified_ids
+                if point_id in forecast_items
+            }
+            forecast = _weather_event_region_source(
+                config,
+                region_id,
+                point_ids,
+                forecast_source_items,
+                source_state="forecast",
+                minimum_verified_unique_grids=registry_item.get("minimum_verified_unique_grids", 1),
+                forecast_date=forecast_date,
+            )
+            subregions[subregion_id] = {
+                "name": registry_item.get("name", subregion_id),
+                "status": "OK" if forecast.get("status") == "OK" and all(item.get("status") == "OK" for item in historical_years.values()) else "PARTIAL" if forecast.get("status") in {"OK", "PARTIAL"} or any(item.get("status") in {"OK", "PARTIAL"} for item in historical_years.values()) else "INVALID",
+                "point_ids": point_ids,
+                "verified_point_ids": verified_ids,
+                "same_grid_qa": {
+                    point_id: copy.deepcopy(point_same_grid_qa.get(point_id))
+                    for point_id in verified_ids
+                },
+                "finalized_history": {"years": historical_years},
+                "forecast": forecast,
+                "sampling": {
+                    "historical_by_year": {year: item.get("sampling") for year, item in historical_years.items()},
+                    "forecast": forecast.get("sampling"),
+                },
+            }
+        composite_history = {}
+        for year in history_years_for_config(config):
+            inputs = {
+                subregion_id: subregions[subregion_id]["finalized_history"]["years"][str(year)]
+                for subregion_id in SUBREGION_KEYS_BY_REGION[region_id]
+                if subregion_id in subregions
+            }
+            composite_history[str(year)] = build_weather_event_composite(
+                inputs,
+                SUBREGION_KEYS_BY_REGION[region_id],
+                source_state="finalized_history",
+                region_id=region_id,
+            )
+        composite_forecast_inputs = {
+            subregion_id: subregions[subregion_id]["forecast"]
+            for subregion_id in SUBREGION_KEYS_BY_REGION[region_id]
+            if subregion_id in subregions
+        }
+        composite_forecast = build_weather_event_composite(
+            composite_forecast_inputs,
+            SUBREGION_KEYS_BY_REGION[region_id],
+            source_state="forecast",
+            forecast_date=forecast_date,
+            region_id=region_id,
+        )
+        composite = {
+            "status": "OK" if composite_forecast.get("status") == "OK" and all(item.get("status") == "OK" for item in composite_history.values()) else "PARTIAL" if composite_forecast.get("status") in {"OK", "PARTIAL"} or any(item.get("status") in {"OK", "PARTIAL"} for item in composite_history.values()) else "INVALID",
+            "usable_for_main_chain": composite_forecast.get("windows", {}).get("d0_7", {}).get("status") == "OK",
+            "aggregation": f"equal_mean_of_{region_id}_subregions; unique grids equal within subregion; gust=max_over_unique_grids",
+            "finalized_history": {"years": composite_history},
+            "forecast": composite_forecast,
+            "subregion_statuses": {key: subregions.get(key, {}).get("status", "INVALID") for key in SUBREGION_KEYS_BY_REGION[region_id]},
+            "missing_or_partial_subregions": [key for key in SUBREGION_KEYS_BY_REGION[region_id] if subregions.get(key, {}).get("status") != "OK"],
+        }
+        finalized = {"years": composite_history}
+        forecast = composite_forecast
+        sampling = {key: value.get("sampling") for key, value in subregions.items()}
+    else:
+        core_id = region_config.get("core_point_id")
+        point_ids = [core_id] if core_id else []
+        verified_ids = [point_id for point_id in point_ids if point_id in active_points(config)]
+        historical_years = {}
+        for year in history_years_for_config(config):
+            source_items = {
+                point_id: historical_items.get(point_id, {}).get(str(year), {})
+                for point_id in verified_ids
+                if historical_items.get(point_id, {}).get(str(year))
+            }
+            historical_years[str(year)] = _weather_event_region_source(
+                config,
+                region_id,
+                point_ids,
+                source_items,
+                source_state="finalized_history",
+            )
+        forecast_source_items = {
+            point_id: forecast_items[point_id]
+            for point_id in verified_ids
+            if point_id in forecast_items
+        }
+        forecast = _weather_event_region_source(
+            config,
+            region_id,
+            point_ids,
+            forecast_source_items,
+            source_state="forecast",
+            forecast_date=forecast_date,
+        )
+        finalized = {"years": historical_years}
+        composite = None
+        subregions = {}
+        sampling = {
+            "historical_by_year": {year: item.get("sampling") for year, item in historical_years.items()},
+            "forecast": forecast.get("sampling"),
+        }
+    region_status = "OK" if forecast.get("status") == "OK" and all(item.get("status") == "OK" for item in finalized.get("years", {}).values()) else "PARTIAL" if forecast.get("status") in {"OK", "PARTIAL"} or any(item.get("status") in {"OK", "PARTIAL"} for item in finalized.get("years", {}).values()) else "INVALID"
+    finalized_episodes = {
+        year: cooling_episode_candidates(item.get("daily") or [])
+        for year, item in finalized.get("years", {}).items()
+    }
+    forecast_episodes = cooling_episode_candidates(forecast.get("daily") or [])
+    result = {
+        "name": region_config.get("name", region_id),
+        "status": region_status,
+        "usable_for_main_chain": forecast.get("windows", {}).get("d0_7", {}).get("status") == "OK",
+        "sampling": sampling,
+        "same_grid_qa": copy.deepcopy(point_same_grid_qa),
+        "finalized_history": finalized,
+        "forecast": forecast,
+        "cooling_episode_candidates": {
+            "finalized_history": finalized_episodes,
+            "forecast": forecast_episodes,
+            "rule_version": COOLING_EPISODE_RULE_VERSION,
+        },
+        "reason": None if region_status == "OK" else "WEATHER_EVENT_REGION_PARTIAL_OR_INVALID",
+    }
+    if subregions:
+        result["subregions"] = subregions
+        result["composite"] = composite
+    return result
+
+
+def run_weather_events(
+    config: dict,
+    hres: dict,
+    generated_at: str,
+    data_date: str,
+    forecast_date: dt.date,
+    *,
+    history_cache_dir: Path | None = None,
+    cache_dir: Path | None = None,
+) -> dict:
+    """Build weather events from history cache plus the current HRES result."""
+    if history_cache_namespace(config) != "altay":
+        return module_header(
+            "weather_events",
+            generated_at,
+            data_date,
+            "SKIPPED",
+            reason="WEATHER_EVENTS_ALTAY_NAMESPACE_ONLY",
+            regions={},
+        )
+    points = active_points(config)
+    configured_years = history_years_for_config(config)
+    historical_items: dict[str, dict[str, dict]] = {}
+    point_same_grid_qa = {}
+    cache_stats = weather_event_cache_stats()
+    history_successes = 0
+    history_failures = 0
+    for point_id, point in points.items():
+        historical_items[point_id] = {}
+        for year in configured_years:
+            source_cache, source_info = load_history_cache(config, point, year, history_cache_dir)
+            if source_cache is None:
+                history_failures += 1
+                historical_items[point_id][str(year)] = {
+                    "status": "INVALID",
+                    "source_state": "finalized_history",
+                    "point_id": point_id,
+                    "year": year,
+                    "identity": {},
+                    "qa": {"final_status": "INVALID", "reason": "HISTORY_CACHE_" + source_info.get("status", "MISSING")},
+                    "daily": [],
+                    "cache_update": {"cache_invalid": 1 if source_info.get("status") == "INVALID" else 0},
+                    "source_cache": source_info,
+                }
+                update_weather_event_cache_stats(cache_stats, historical_items[point_id][str(year)])
+                continue
+            source_cache["_cache_path"] = source_info.get("path")
+            event_cache, update_info = update_weather_events_cache(
+                config,
+                point,
+                year,
+                source_cache,
+                generated_at,
+                cache_dir=cache_dir,
+            )
+            if event_cache is None:
+                history_failures += 1
+                historical_items[point_id][str(year)] = {
+                    "status": "INVALID",
+                    "source_state": "finalized_history",
+                    "point_id": point_id,
+                    "year": year,
+                    "identity": copy.deepcopy(source_cache.get("identity") or {}),
+                    "qa": {"final_status": "INVALID", "reason": "WEATHER_EVENT_CACHE_IDENTITY_INVALID"},
+                    "daily": [],
+                    "cache_update": update_info.get("cache_update", {}),
+                    "source_cache": source_info,
+                }
+            else:
+                history_successes += 1
+                item = _weather_event_item_from_history_cache(
+                    config,
+                    point,
+                    year,
+                    {
+                        **event_cache,
+                        "record_metadata": source_cache.get("record_metadata", {}),
+                    },
+                    update_info.get("cache_update", {}),
+                )
+                item["source_history_cache_key"] = event_cache.get("source_history_cache_key")
+                item["source_history_cache_path"] = source_info.get("path")
+                item["cache_path"] = update_info.get("path")
+                item["cache_update"] = update_info.get("cache_update", {})
+                historical_items[point_id][str(year)] = item
+            update_weather_event_cache_stats(cache_stats, historical_items[point_id][str(year)])
+        point_same_grid_qa[point_id] = weather_event_point_same_grid_qa(
+            config,
+            point_id,
+            historical_items[point_id],
+        )
+    forecast_items = {}
+    forecast_successes = 0
+    forecast_failures = 0
+    cutoff = ALTAY_WEATHER_EVENTS_CUTOFF
+    for point_id, point in points.items():
+        record = (hres.get("points") or {}).get(point_id)
+        if record and record.get("status") == "PASS":
+            item = _weather_event_item_from_forecast_record(point, record, cutoff)
+        else:
+            item = {
+                "status": "INVALID",
+                "source_state": "forecast",
+                "point_id": point_id,
+                "identity": {},
+                "qa": {"final_status": "INVALID", "reason": "HRES_POINT_INVALID"},
+                "daily": [],
+                "metrics": None,
+            }
+        forecast_items[point_id] = item
+        if item.get("status") == "OK":
+            forecast_successes += 1
+        else:
+            forecast_failures += 1
+    regions = {
+        region_id: build_weather_event_region(
+            config,
+            region_id,
+            historical_items,
+            forecast_items,
+            forecast_date,
+            point_same_grid_qa,
+        )
+        for region_id in CORE_REGION_IDS
+    }
+    status = "OK" if history_failures == 0 and forecast_failures == 0 and all(item.get("status") == "OK" for item in regions.values()) else "PARTIAL" if history_successes or forecast_successes else "FAILED"
+    finalized_points = {
+        point_id: {
+            "point_id": point_id,
+            "point": {"name": point.get("name"), "region": point.get("region"), "status": point.get("status")},
+            "same_grid_qa": point_same_grid_qa[point_id],
+            "years": historical_items[point_id],
+        }
+        for point_id, point in points.items()
+    }
+    forecast_points = {
+        point_id: {
+            key: copy.deepcopy(value)
+            for key, value in item.items()
+            if key not in {"cache_update"}
+        }
+        for point_id, item in forecast_items.items()
+    }
+    cooling = {
+        "finalized_history": {
+            region_id: copy.deepcopy((region.get("cooling_episode_candidates") or {}).get("finalized_history", {}))
+            for region_id, region in regions.items()
+        },
+        "forecast": {
+            region_id: copy.deepcopy((region.get("cooling_episode_candidates") or {}).get("forecast", []))
+            for region_id, region in regions.items()
+        },
+        "rule_version": COOLING_EPISODE_RULE_VERSION,
+    }
+    return module_header(
+        "weather_events",
+        generated_at,
+        data_date,
+        status,
+        source="Open-Meteo",
+        finalized_history={
+            "source_state": "finalized_history",
+            "source": "Open-Meteo Historical Weather API via history cache",
+            "model": HISTORY_MODEL,
+            "model_parameter": HISTORY_MODEL_PARAMETER,
+            "history_years": list(configured_years),
+            "points": finalized_points,
+        },
+        forecast={
+            "source_state": "forecast",
+            "source": "Open-Meteo",
+            "endpoint": OPEN_METEO_ENDPOINTS["hres"],
+            "model": "ECMWF IFS HRES 9 km",
+            "forecast_date": forecast_date.isoformat(),
+            "cutoff_date": cutoff.isoformat(),
+            "points": forecast_points,
+            "historical_promotion_allowed": False,
+        },
+        regions=regions,
+        cooling_episode_candidates=cooling,
+        weather_event_cache={
+            "enabled": True,
+            "directory": history_cache_relative_path(Path(cache_dir) if cache_dir is not None else WEATHER_EVENTS_CACHE_DIR),
+            "source_history_cache_directory": history_cache_relative_path(Path(history_cache_dir) if history_cache_dir is not None else HISTORY_CACHE_DIR),
+            "historical_api_requests": 0,
+            **cache_stats,
+        },
+        qa={
+            "final_status": "PASS" if status == "OK" else "PARTIAL" if status == "PARTIAL" else "FAILED",
+            "history_source_records": {"successful": history_successes, "failed": history_failures, "expected": len(points) * len(configured_years)},
+            "forecast_records": {"successful": forecast_successes, "failed": forecast_failures, "expected": len(points)},
+            "forecast_cutoff_date": cutoff.isoformat(),
+            "forecast_dates_after_cutoff_emitted": False,
+            "historical_source_is_cache_only": True,
+        },
+        interpretation_boundary="Weather events and transparent heuristics only; no ecological or travel conclusion is generated.",
+        excluded_points=excluded_points(config),
+        successful_points=forecast_successes,
+        failed_points=history_failures + forecast_failures,
+    )
 
 
 def numeric_deltas(current: dict, baseline: dict) -> dict:
@@ -5609,6 +7002,39 @@ def build_registered_light_region(
     }
 
 
+def weather_event_light_summary(weather_events: dict | None, region_id: str) -> dict:
+    """Return only the small next-0-7-day event view for the compact artifact."""
+    if not weather_events:
+        return {"status": "UNAVAILABLE", "reason": "WEATHER_EVENTS_MODULE_UNAVAILABLE"}
+    region = (weather_events.get("regions") or {}).get(region_id) or {}
+    forecast = region.get("forecast") or {}
+    window = (forecast.get("windows") or {}).get("d0_7") or {}
+    metrics = window.get("metrics") or {}
+    if not metrics:
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "WEATHER_EVENTS_FORECAST_WINDOW_UNAVAILABLE",
+        }
+    episodes = ((region.get("cooling_episode_candidates") or {}).get("forecast") or [])
+    return {
+        "status": window.get("status", "UNAVAILABLE"),
+        "next_0_7d_max_gust_kmh": metrics.get("wind_gust_max_kmh"),
+        "next_0_7d_precip_total_mm": metrics.get("precipitation_total_mm"),
+        "next_0_7d_snowfall_total_cm": metrics.get("snowfall_total_cm"),
+        "next_0_7d_gust_ge_50_days": metrics.get("gust_ge_50_days"),
+        "next_0_7d_combined_weather_stress_events": metrics.get("combined_weather_stress_events"),
+        "mechanical_leaf_stress": copy.deepcopy(
+            metrics.get("mechanical_leaf_stress") or {
+                "level": "UNDETERMINED",
+                "reasons": [],
+                "rule_version": MECHANICAL_LEAF_STRESS_RULE_VERSION,
+            }
+        ),
+        "current_cooling_episode_candidate": copy.deepcopy(episodes[0]) if episodes else None,
+        "interpretation_boundary": "Weather mechanical pressure only; no ecological or travel conclusion.",
+    }
+
+
 def build_phenology_weather_summary(
     config: dict,
     generated_at: str,
@@ -5616,6 +7042,7 @@ def build_phenology_weather_summary(
     forecast_date: dt.date,
     hres: dict,
     history_forward: dict,
+    weather_events: dict | None = None,
 ) -> dict:
     """Build the compact ChatGPT-facing weather-only statistics artifact."""
     regions = {}
@@ -5632,6 +7059,8 @@ def build_phenology_weather_summary(
                 hres,
                 history_forward,
             )
+            if weather_events is not None:
+                regions[region_id]["weather_events"] = weather_event_light_summary(weather_events, region_id)
             continue
         core_id = region_config.get("core_point_id")
         point = active_points(config).get(core_id) if core_id else None
@@ -5642,6 +7071,8 @@ def build_phenology_weather_summary(
                 "status": "UNAVAILABLE",
                 "reason": "NO_VERIFIED_CORE_POINT",
             }
+            if weather_events is not None:
+                regions[region_id]["weather_events"] = weather_event_light_summary(weather_events, region_id)
             continue
         years, sampling = point_year_lightweight_views(config, core_id, hres, history_forward, forecast_date)
         regions[region_id] = {
@@ -5652,6 +7083,8 @@ def build_phenology_weather_summary(
             "sampling": sampling,
             "years": years,
         }
+        if weather_events is not None:
+            regions[region_id]["weather_events"] = weather_event_light_summary(weather_events, region_id)
     return {
         "schema_version": SCHEMA_VERSION,
         "module": "phenology_weather_summary",
@@ -5670,6 +7103,7 @@ def build_phenology_weather_summary(
             "hemu_aggregation": "unique grids equal within valley/backhill, then valley and backhill equal in composite",
         },
         "window_definitions": history_forward_windows_for_year(forecast_date, 2026),
+        "weather_events_path": "data/latest/weather_events.json",
         "weather_only": True,
         "interpretation_boundary": "Weather statistics only; this file contains no downstream ecological or travel conclusion.",
         "regions": regions,
@@ -5684,8 +7118,9 @@ def summary_qa(
     single_region: dict | None,
     spatial_region: dict | None,
     long_range_region: dict | None = None,
+    weather_events_region: dict | None = None,
 ) -> dict:
-    return {
+    result = {
         "hres": hres_record.get("status") if hres_record else "FAILED",
         "history": history_region.get("status", "FAILED") if history_region else "FAILED",
         "ensemble": ensemble_record.get("status") if ensemble_record else "FAILED",
@@ -5698,6 +7133,9 @@ def summary_qa(
             else "FAILED"
         ),
     }
+    if weather_events_region is not None:
+        result["weather_events"] = weather_events_region.get("status", "FAILED")
+    return result
 
 
 def build_summary(
@@ -5712,6 +7150,7 @@ def build_summary(
     single_runs: dict,
     spatial: dict,
     long_range: dict | None = None,
+    weather_events: dict | None = None,
 ) -> dict:
     active = active_points(config)
     history_regions = (history.get("region_summaries") or {}).get("regions", {})
@@ -5727,6 +7166,7 @@ def build_summary(
         single_region = (single_runs.get("regions") or {}).get(region_id)
         spatial_region = (spatial.get("regions") or {}).get(region_id)
         long_range_region = long_range_regions.get(region_id)
+        weather_events_region = ((weather_events or {}).get("regions") or {}).get(region_id)
         if not core_point:
             regions[region_id] = {
                 "visit_date": region_config.get("primary_visit_date"),
@@ -5743,8 +7183,10 @@ def build_summary(
                 "gfs_crosscheck": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
                 "leaf_loss_weather_risk": {"status": "UNAVAILABLE", "reason": "NO_VERIFIED_CORE_POINT"},
                 "forecast_16_35d": unavailable_long_range_summary("NO_VERIFIED_CORE_POINT"),
-                "qa": summary_qa(None, None, None, None, None, spatial_region, long_range_region),
+                "qa": summary_qa(None, None, None, None, None, spatial_region, long_range_region, weather_events_region),
             }
+            if weather_events is not None:
+                regions[region_id]["weather_events"] = weather_event_light_summary(weather_events, region_id)
             continue
         hres_days = (hres_record or {}).get("daily", [])
         forecast_short = forecast_0_7d(hres_days) if hres_record and hres_record.get("status") == "PASS" else {"status": "UNAVAILABLE", "reason": "HRES_INVALID"}
@@ -5773,8 +7215,10 @@ def build_summary(
             "gfs_crosscheck": gfs_crosscheck(hres_record, gfs_record),
             "leaf_loss_weather_risk": leaf_loss_weather_risk(hres_days, now_local.date()) if hres_record and hres_record.get("status") == "PASS" else {"status": "UNAVAILABLE", "reason": "HRES_INVALID"},
             "forecast_16_35d": long_range_summary_for_chatgpt(long_range_region),
-            "qa": summary_qa(hres_record, history_region, ensemble_record, gfs_record, single_region, spatial_region, long_range_region),
+            "qa": summary_qa(hres_record, history_region, ensemble_record, gfs_record, single_region, spatial_region, long_range_region, weather_events_region),
         }
+        if weather_events is not None:
+            regions[region_id]["weather_events"] = weather_event_light_summary(weather_events, region_id)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -5787,6 +7231,7 @@ def build_summary(
             for region_id in config["regions"]
         },
         "phenology_weather_summary_path": "data/latest/phenology_weather_summary.json",
+        "weather_events_path": "data/latest/weather_events.json",
         "regions": regions,
         "manual_phenology_baseline": config.get("manual_phenology_baseline"),
         "interpretation_boundary": "This file reports weather drivers and weather event risk. It does not produce a final autumn-colour or phenology conclusion.",
@@ -6205,6 +7650,8 @@ def compact_module(name: str, value: dict) -> dict:
         compact.pop("raw_points", None)
         compact.pop("raw_references", None)
         compact["raw_hourly_included"] = False
+    elif name == "weather_events":
+        compact["raw_hourly_included"] = False
     return compact
 
 
@@ -6251,9 +7698,11 @@ def write_outputs(
     summary: dict,
     grid_registry: dict | None = None,
     phenology_weather_summary: dict | None = None,
+    weather_events: dict | None = None,
 ) -> None:
     grid_registry = grid_registry or {}
     phenology_weather_summary = phenology_weather_summary or {}
+    weather_events = weather_events or {}
     artifacts = {
         "status.json": status,
         "hres.json": hres,
@@ -6266,6 +7715,7 @@ def write_outputs(
         "long_range.json": public_long_range_artifact(long_range),
         "grid_registry.json": grid_registry,
         "phenology_weather_summary.json": phenology_weather_summary,
+        "weather_events.json": weather_events,
         "summary.json": summary,
     }
     for filename, artifact in artifacts.items():
@@ -6288,6 +7738,7 @@ def write_outputs(
         "spatial_sampling.json.gz": spatial,
         "long_range.json.gz": long_range,
         "grid_registry.json.gz": grid_registry,
+        "weather_events.json.gz": weather_events,
     }
     for filename, artifact in raw_values.items():
         write_gzip_json(archive_path / "raw" / filename, artifact)
@@ -6336,12 +7787,14 @@ def build_status(
     history_forward_status = modules.get("history_forward", {}).get("status", "FAILED")
     long_range_status = modules.get("long_range", {}).get("status", "FAILED")
     light_summary_status = modules.get("phenology_weather_summary", {}).get("status")
+    weather_events_status = modules.get("weather_events", {}).get("status")
     if all(value == "OK" for value in module_values.values()):
         pipeline_status = (
             "OK"
             if long_range_status == "OK"
             and history_forward_status == "OK"
             and light_summary_status in {None, "OK"}
+            and weather_events_status in {None, "OK"}
             else "PARTIAL"
         )
     elif modules.get("hres", {}).get("status") == "OK" or modules.get("history", {}).get("status") == "OK":
@@ -6394,6 +7847,8 @@ def build_status(
     }
     if light_summary_status is not None:
         result["modules"]["phenology_weather_summary"] = light_summary_status
+    if weather_events_status is not None:
+        result["modules"]["weather_events"] = weather_events_status
     if namespaces:
         result["namespaces"] = namespaces
     return result
@@ -6405,7 +7860,7 @@ def minimal_failure_status(generated_at: str, reason: str) -> dict:
         "generated_at": generated_at,
         "data_date": None,
         "pipeline_status": "FAILED",
-        "modules": {"hres": "FAILED", "history": "FAILED", "history_forward": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED", "phenology_weather_summary": "FAILED"},
+        "modules": {"hres": "FAILED", "history": "FAILED", "history_forward": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED", "phenology_weather_summary": "FAILED", "weather_events": "FAILED"},
         "module_details": {"pipeline": {"status": "FAILED", "error": reason}},
         "points": {},
         "route_slots": {},
@@ -6513,6 +7968,23 @@ def run_pipeline(
             artifact_module="long_range_background",
         )
 
+    log("PHASE 8A: WEATHER EVENTS")
+    try:
+        modules["weather_events"] = run_weather_events(
+            config,
+            modules["hres"],
+            generated_at,
+            data_date,
+            now_local.date(),
+        )
+    except Exception as error:
+        modules["weather_events"] = failed_module(
+            "weather_events",
+            generated_at,
+            data_date,
+            error,
+        )
+
     log("PHASE 9: SUMMARY")
     try:
         summary = build_summary(
@@ -6527,6 +7999,7 @@ def run_pipeline(
             modules["single_runs"],
             modules["spatial_sampling"],
             modules["long_range"],
+            modules["weather_events"],
         )
     except Exception as error:
         log(f"[summary] BUILD FAILED: {type(error).__name__}:{error}")
@@ -6568,6 +8041,7 @@ def run_pipeline(
             now_local.date(),
             modules["hres"],
             modules["history_forward"],
+            modules["weather_events"],
         )
         modules["phenology_weather_summary"] = {
             "status": "OK",
@@ -6634,6 +8108,7 @@ def run_pipeline(
         summary=summary,
         grid_registry=grid_registry,
         phenology_weather_summary=phenology_weather_summary,
+        weather_events=modules["weather_events"],
     )
     log(f"PIPELINE STATUS: {status['pipeline_status']}")
     for name, value in status["modules"].items():

@@ -5,14 +5,14 @@
   "type": "object",
   "required": ["schema_version", "generated_at", "data_date", "pipeline_status", "modules", "points"],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.1.0"},
+    "schema_version": {"type": "string", "const": "1.2.0"},
     "generated_at": {"type": "string", "format": "date-time"},
     "data_date": {"type": ["string", "null"]},
     "history_years": {"type": "array", "items": {"type": "integer"}},
     "pipeline_status": {"type": "string", "enum": ["OK", "PARTIAL", "DEGRADED", "FAILED"]},
     "modules": {
       "type": "object",
-      "additionalProperties": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "SKIPPED"]}
+      "additionalProperties": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "SKIPPED", "INVALID"]}
     },
     "module_details": {"type": "object"},
     "points": {"type": "object"},

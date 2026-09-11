@@ -17,7 +17,7 @@
     "regions"
   ],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.1.0"},
+    "schema_version": {"type": "string", "const": "1.2.0"},
     "module": {"type": "string", "const": "phenology_weather_summary"},
     "generated_at": {"type": "string", "format": "date-time"},
     "data_date": {"type": "string", "format": "date"},
@@ -93,7 +93,8 @@
         "sampling": {"$ref": "#/$defs/sampling"},
         "years": {"type": "object", "additionalProperties": {"$ref": "#/$defs/year"}},
         "subregions": {"type": "object", "additionalProperties": {"$ref": "#/$defs/region"}},
-        "composite": {"$ref": "#/$defs/region"}
+        "composite": {"$ref": "#/$defs/region"},
+        "weather_events": {"type": "object"}
       },
       "additionalProperties": true
     }

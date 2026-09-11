@@ -17,6 +17,7 @@
 - spatial_sampling.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/spatial_sampling.json>
 - long_range.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/long_range.json>
 - phenology_weather_summary.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/phenology_weather_summary.json>
+- weather_events.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/weather_events.json>
 - grid_registry.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/grid_registry.json>
 
 额济纳使用独立 `ejina` namespace；日常读取其前两个入口：
@@ -179,6 +180,18 @@ ChatGPT 可以用 16–35 天层提前关注 9 月 15–25 日前后的持续偏
 
 GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性，不参与平均，也不直接产生秋色判断。`leaf_loss_weather_risk` 只表达强阵风、湿雪、雨雪和冻结等天气事件风险；9 月 20 日前强风不额外加权，9 月 20 日后才启用季节权重。它不表示树叶一定掉落，实际挂叶风险由 ChatGPT 结合实拍和成熟度判断。
 
+## Weather Events / Wind-Snow-Rain / Leaf Mechanical Stress
+
+`data/latest/weather_events.json` 是天气事件数据库。历史部分只消费已经通过 QA 的 `data/cache/history/<namespace>/<year>/<point_id>.json`，不会为派生事件再次请求 Historical API；预报部分只消费本次运行的 HRES。历史 daily 与预报 daily 分别标记为 `source_state=finalized_history` 和 `source_state=forecast`，预报不会晋升为固定历史。阿勒泰预报衍生值硬截止到 `2026-10-06`。
+
+每个完整日保留冻结、降雨、降雪、阵风阈值及组合事件 flag，并生成稳定的 `source_fingerprint`。派生缓存位于 `data/cache/weather_events/<namespace>/<year>/<point_id>.json`，绑定历史缓存的坐标、返回格点、模型、`elevation=nan`、时区和 QA。缓存命中时不改写文件；只对新增日期、源 fingerprint 变化或被移除日期更新。`cache_update` 与模块顶层 `weather_event_cache` 记录命中、回填、重算和源日期变化数量。
+
+窗口统计对连续天气变量沿用现有 unique returned model grid 等权规则；阵风极值取有效 unique grid 的最大值，并记录来源 point/grid。事件统计同时给出 `any_grid_event`、触发的 unique grid 数和总 unique grid 数，不能把重复请求坐标当成独立样本。喀纳斯按 `sanwan/lake/guanyutai` 三子区等权，禾木按 `valley/backhill` 两子区等权，PROVISIONAL 点不会进入主链。
+
+`cooling_episode_candidates` 是固定规则的天气降温过程候选，不是物候阶段。当前 `cooling_episode_v1` 参数为：连续完整日、前 3 日均温基准；当前日均温较基准至少下降 `3.0°C` 或夜最低温至少下降 `2.0°C` 才触发；后续日均温或夜最低温回到基准减 `0.5°C` 以内即结束；最多向后检查 3 日回暖，候选间至少间隔 2 日。小于这些阈值的日常波动不生成候选。所有 episode 只输出天气指标和 `rule_version`。
+
+`mechanical_leaf_stress` 是天气机械压力分级，不是实际落叶概率，也不是白桦生物学硬阈值：阵风 `>=50 km/h` 记 `strong_wind`，`>=65 km/h` 记 `very_strong_wind`；雨雪与阵风组合分别记 `wind_plus_rain`/`wind_plus_snow`；强冻与雪组合记 `hard_freeze_plus_snow`。单日达到 `>=65 km/h` 或强冻加雪/强风加雪时为 `HIGH`；单日阵风 `>=50 km/h`、雨、雪或冻结但未达到 HIGH 时为 `MEDIUM`；有可用天气值但未触发组合时为 `LOW`。这层不写入树叶成熟度、不判断大量掉叶；ChatGPT 仍需结合实拍判断。
+
 ## 目录和保留策略
 
 ```text
@@ -188,6 +201,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 ├── config/ejina_points.json
 ├── data/
 │   ├── cache/history/<namespace>/<year>/<point_id>.json
+│   ├── cache/weather_events/<namespace>/<year>/<point_id>.json
 │   ├── latest/
 │   │   ├── status.json
 │   │   ├── summary.json
@@ -201,23 +215,24 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── long_range.json
 │   │   ├── grid_registry.json
 │   │   ├── phenology_weather_summary.json
+│   │   ├── weather_events.json
 │   │   └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json
 │   └── archive/YYYY-MM-DD/
 │       ├── 同名压缩后的每日 JSON（含 history_forward.json 和 phenology_weather_summary.json）
 │       ├── raw/*.json.gz
 │       └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json + raw/*.json.gz
-├── schemas/{status,summary,module,history_cache,history_forward,long_range,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
+├── schemas/{status,summary,module,history_cache,weather_events_cache,weather_events,history_forward,long_range,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt
 └── README.md
 ```
 
-`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照长期保留。Schema 版本目前为 `1.1.0`。这是对 v1.0.0 的兼容性新增：已有字段和模块语义保持不变，新增 `long_range_background` 模块及 summary 的 `forecast_16_35d` 字段。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
+`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照和派生 weather-event cache 长期保留。Schema 版本目前为 `1.2.0`。这是对 v1.0.0/v1.1.0 的兼容性新增：已有字段和模块语义保持不变，新增 `weather_events` 派生模块、weather-event cache 和 summary 轻量事件字段。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
 
 ## GitHub Actions 和本地运行
 
-`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并在 `00/06/12/18 UTC` 模型时次后第 17 分钟运行，即北京时间每天 `02:17、08:17、14:17、20:17`。17 分钟偏移用于避开整点负载；Open-Meteo 的实际到数时间仍可能因模型处理和服务器同步浮动。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再读取/补抓 Open-Meteo 历史缓存和请求其他模块，最后在 `permissions: contents: write` 下提交 `data/latest`、`data/archive` 和 `data/cache`。手动触发时可勾选 `refresh_history`，强制重新核验历史缓存。
+`.github/workflows/update-weather.yml` 支持 `workflow_dispatch`，并在 `00/06/12/18 UTC` 模型时次后第 17 分钟运行，即北京时间每天 `02:17、08:17、14:17、20:17`。17 分钟偏移用于避开整点负载；GitHub scheduled workflow 仍可能排队延迟，日志会保留名义触发与实际运行时间。它使用 Python 3.12、安装 `requirements.txt`、先运行单元测试，再读取/补抓 Open-Meteo 历史缓存和请求其他模块，随后从历史缓存增量构建 weather-event cache，最后在 `permissions: contents: write` 下提交 `data/latest`、`data/archive` 和 `data/cache`。手动触发时可勾选 `refresh_history`，强制重新核验历史缓存；派生 weather-event 层不会因此重复调用同一 Historical API。
 
 本地运行：
 
@@ -234,10 +249,10 @@ python3.12 src/pipeline.py --refresh-history
 ## 推荐的 ChatGPT 每日读取顺序
 
 1. 读取 `status.json`，确认 `pipeline_status` 和 `modules`；任何 `FAILED` 模块都按缺失证据处理。
-2. 日常读取 `phenology_weather_summary.json`，按 `regions` 读取 B1、Kanas 三子区/composite、Hemu 两子区/composite、C1 的 2023–2026 窗口统计；该文件不含 hourly/daily 原始数组。
+2. 日常读取 `phenology_weather_summary.json`，按 `regions` 读取 B1、Kanas 三子区/composite、Hemu 两子区/composite、C1 的 2023–2026 窗口统计；该文件不含 hourly/daily 原始数组，并包含轻量 weather-event 字段。
 3. 读取 `summary.json`，按 `regions` 的 `visit_date` 映射 10/1 白哈巴、10/2 喀纳斯、10/3 喀纳斯三湾→白哈巴→铁贾公路→契巴罗衣、10/4 禾木、10/5 禾木→阿禾公路→G331→可可托海、10/6 可可托海、10/7 返程。
 4. 用 `weather_driver_vs_2025`、`forecast_0_7d`、`forecast_8_15d`、`forecast_16_35d`、Ensemble 分布、Single Runs 和 GFS 交叉验证整理天气证据；长期层只作 16–35 天背景概率层；需要查看完整历史同期后续路径时读取 `history_forward.json`，先检查其 `status`、Kanas/Hemu `subregion_aggregation_status` 和各区域 `same_grid_qa`。
 5. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
-6. 读取 `grid_registry.json`、`long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED`、`PARTIAL` 或 `UNDETERMINED` 时保留不确定性。
+6. 读取 `weather_events.json`、`grid_registry.json`、`long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED`、`PARTIAL` 或 `UNDETERMINED` 时保留不确定性。weather events 只能用来描述天气事件和机械天气压力，不能直接改写为实际物候日期。
 
-当前 v1.1.0 Schema 已覆盖长期背景层。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。
+当前 v1.2.0 Schema 已覆盖长期背景层和派生 weather-event 层。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。
