@@ -1,7 +1,7 @@
 {
-  "data_date": "2026-09-20",
+  "data_date": "2026-09-21",
   "failure_policy": "Any request, QA, model, timezone, missing-data, or grid-representativeness failure is recorded as INVALID; no external weather fallback is used.",
-  "generated_at": "2026-09-21T12:51:45Z",
+  "generated_at": "2026-09-21T17:43:51Z",
   "history_years": [
     2023,
     2024,
@@ -25,6 +25,13 @@
       "partial_points": null,
       "status": "OK",
       "successful_points": 4
+    },
+    "gefs": {
+      "error": null,
+      "failed_points": 0,
+      "partial_points": 11,
+      "status": "PARTIAL",
+      "successful_points": 0
     },
     "gfs": {
       "error": null,
@@ -99,6 +106,7 @@
   },
   "modules": {
     "ensemble": "OK",
+    "gefs": "PARTIAL",
     "gfs": "OK",
     "history": "OK",
     "history_forward": "FAILED",
@@ -113,11 +121,11 @@
     "ejina": {
       "long_range_path": "data/latest/ejina/long_range.json",
       "modules": {
-        "ensemble": "OK",
+        "ensemble": "FAILED",
         "gfs": "OK",
         "history": "OK",
         "hres": "OK",
-        "long_range": "PARTIAL",
+        "long_range": "FAILED",
         "single_runs": "OK"
       },
       "status": "PARTIAL",
@@ -261,5 +269,5 @@
       "usable_for_main_chain": false
     }
   },
-  "schema_version": "1.2.0"
+  "schema_version": "1.3.0"
 }

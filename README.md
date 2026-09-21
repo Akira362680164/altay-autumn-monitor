@@ -16,6 +16,7 @@
 - single_runs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/single_runs.json>
 - spatial_sampling.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/spatial_sampling.json>
 - long_range.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/long_range.json>
+- gefs.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/gefs.json>
 - phenology_weather_summary.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/phenology_weather_summary.json>
 - weather_events.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/weather_events.json>
 - grid_registry.json: <https://raw.githubusercontent.com/Akira362680164/altay-autumn-monitor/main/data/latest/grid_registry.json>
@@ -47,6 +48,7 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 - [Single Runs API](https://open-meteo.com/en/docs/single-runs-api)：endpoint 为 `https://single-runs-api.open-meteo.com/v1/forecast`，固定 `models=ecmwf_ifs`，比较不同 UTC 初始化 run。
 - [GFS API](https://open-meteo.com/en/docs/gfs-api)：固定 GFS Global 0.11°（约 13 km），只作趋势交叉验证。
 - [Ensemble API](https://open-meteo.com/en/docs/ensemble-api) 与 [官方 Ensemble OpenAPI 注册表](https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml)：16–35 天背景层当前使用全球 GFS Ensemble 0.5°，请求模型 ID 为 `ncep_gefs05`。
+- 独立 GEFS 链同样使用 [Ensemble API](https://open-meteo.com/en/docs/ensemble-api)：近中期请求 `ncep_gefs025`（全球约 0.25°、约 25 km、31 个序列、当前约 10 天），远期请求 `ncep_gefs05`（全球约 0.5°、约 50 km、31 个序列、当前约 35 天）。两段分别保存和统计，不与 ECMWF Ensemble 平均。
 
 所有请求统一使用：
 
@@ -178,6 +180,22 @@ ChatGPT 可以用 16–35 天层提前关注 9 月 15–25 日前后的持续偏
 
 如果长期背景层与后续进入 8–15 天的 HRES/ECMWF Ensemble 发生变化，以新的短周期模型为准。长期层也不把强风自动解释为掉叶；`leaf_loss_weather_risk` 仍只是天气事件风险，实际挂叶判断由 ChatGPT 结合实拍和成熟度完成。
 
+## Independent GEFS and Golden Week Brief
+
+`data/latest/gefs.json` 是独立的 NOAA GFS Ensemble（GEFS）证据层，用来判断 GFS deterministic 的远期轨迹是否得到成员支持、天气过程大致落在哪个日期以及相位分歧有多大。它不替代 `gfs.json`，也不与 ECMWF Ensemble 做平均。
+
+- `near_range` 使用 `ncep_gefs025`：全球约 0.25°、约 25 km、31 个序列，当前接口约 10 天；用于近中期成员分布和确定性 GFS 交叉验证。
+- `long_range` 使用 `ncep_gefs05`：全球约 0.5°、约 50 km、31 个序列，当前接口约 35 天；用于 11 天以后到 `2026-10-06` 的趋势、概率和过程窗口。粗网格结果不能当作村级小时级精准预报。
+- 当前 Ensemble API 文档没有 solar/shortwave 变量；程序会显式记录 `shortwave_radiation`/`sunshine_duration` 缺失，模块可为 `PARTIAL`，不会用其他平台补值。
+- 每个窗口保留 temperature/cloud/low-cloud/precipitation/snowfall/gust 的百分位与概率，分母是 `members_valid`。成员缺失不会被当作零。
+- `CLOUD_EVENT`、`PRECIP_EVENT`、`SNOW_EVENT` 和 `COLD_EVENT` 只表示天气过程候选；输出 `event_start/event_peak/event_end` 的 p25/median/p75、最早/最晚、`phase_spread_hours`、`phase_confidence`、`multimodal` 和 `event_day_distribution`。这些字段不表示物候阶段、黄叶或掉叶。
+- `MORNING`、`AFTERNOON`、`NIGHT` 均按 `Asia/Shanghai` 聚合；10/6 的 NIGHT 会因硬截止只包含 10/6 当天 18:00 后的数据，不读取 10/7。
+- `summary.json.golden_week_brief` 是给下游日报快速读取的 2026-10-01 至 2026-10-06 简表。它只列 VERIFIED 点，提供 HRES/GFS deterministic、ECMWF Ensemble、GEFS、天气过程相位、deterministic support、EC/GEFS consensus、`viewing_conditions` 和固定 `itinerary_focus`；不含 10/7 以后日期，也不输出旅游建议或秋色结论。
+
+时间尺度纪律：0–7 天可以看细观景窗口和集合分布；8–14 天以日期/过程为主，上午/下午只是低置信参考；15 天以后只读趋势、概率、过程窗口、相位离散度和风雪背景。3 小时数组的输出频率不等于 10 天以后拥有 3 小时预报精度。
+
+主链优先级仍为：`0–7 天 ECMWF HRES > ECMWF Ensemble > GFS`；`8–15 天 ECMWF HRES 趋势 + ECMWF Ensemble > GFS`；`16–35 天 GFS Ensemble background only`。GEFS 请求只对 `VERIFIED` 点进入正式 `gefs` 与 `golden_week_brief`；`PROVISIONAL`、`ROUTE_NOT_VERIFIED` 仍只会出现在排除/QA信息中。
+
 GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性，不参与平均，也不直接产生秋色判断。`leaf_loss_weather_risk` 只表达强阵风、湿雪、雨雪和冻结等天气事件风险；9 月 20 日前强风不额外加权，9 月 20 日后才启用季节权重。它不表示树叶一定掉落，实际挂叶风险由 ChatGPT 结合实拍和成熟度判断。
 
 ## Weather Events / Wind-Snow-Rain / Leaf Mechanical Stress
@@ -202,6 +220,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 ├── data/
 │   ├── cache/history/<namespace>/<year>/<point_id>.json
 │   ├── cache/weather_events/<namespace>/<year>/<point_id>.json
+│   ├── cache/gefs/<model_id>/<point_id>.json
 │   ├── latest/
 │   │   ├── status.json
 │   │   ├── summary.json
@@ -213,6 +232,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │   │   ├── single_runs.json
 │   │   ├── spatial_sampling.json
 │   │   ├── long_range.json
+│   │   ├── gefs.json
 │   │   ├── grid_registry.json
 │   │   ├── phenology_weather_summary.json
 │   │   ├── weather_events.json
@@ -221,14 +241,14 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 │       ├── 同名压缩后的每日 JSON（含 history_forward.json 和 phenology_weather_summary.json）
 │       ├── raw/*.json.gz
 │       └── ejina/{status,summary,hres,history_comparison,ensemble,gfs,single_runs,long_range}.json + raw/*.json.gz
-├── schemas/{status,summary,module,history_cache,weather_events_cache,weather_events,history_forward,long_range,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
+├── schemas/{status,summary,module,history_cache,weather_events_cache,weather_events,history_forward,long_range,gefs,grid_registry,phenology_weather_summary,ejina_points,ejina_status,ejina_summary}.schema.json
 ├── src/pipeline.py
 ├── tests/test_pipeline.py
 ├── requirements.txt
 └── README.md
 ```
 
-`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照和派生 weather-event cache 长期保留。Schema 版本目前为 `1.2.0`。这是对 v1.0.0/v1.1.0 的兼容性新增：已有字段和模块语义保持不变，新增 `weather_events` 派生模块、weather-event cache 和 summary 轻量事件字段。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
+`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照、GEFS response cache 和派生 weather-event cache 长期保留。Schema 版本目前为 `1.3.0`。这是对 v1.0.0/v1.1.0/v1.2.0 的兼容性新增：已有字段和模块语义保持不变，新增独立 `gefs` 模块、国庆 `golden_week_brief` 和 GEFS/摘要 QA 字段。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
 
 ## GitHub Actions 和本地运行
 
@@ -255,4 +275,4 @@ python3.12 src/pipeline.py --refresh-history
 5. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
 6. 读取 `weather_events.json`、`grid_registry.json`、`long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED`、`PARTIAL` 或 `UNDETERMINED` 时保留不确定性。weather events 只能用来描述天气事件和机械天气压力，不能直接改写为实际物候日期。
 
-当前 v1.2.0 Schema 已覆盖长期背景层和派生 weather-event 层。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。
+当前 v1.3.0 Schema 已覆盖长期背景层、派生 weather-event 层、独立 GEFS 层和国庆关键日期简表。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。

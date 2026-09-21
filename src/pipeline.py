@@ -39,9 +39,16 @@ WEATHER_EVENTS_CACHE_DIR = ROOT / "data" / "cache" / "weather_events"
 TIMEZONE_NAME = "Asia/Shanghai"
 LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
 UTC = dt.timezone.utc
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
 LEGACY_SCHEMA_VERSION = "1.0.0"
 PREVIOUS_SCHEMA_VERSION = "1.1.0"
+PRIOR_SCHEMA_VERSION = "1.2.0"
+COMPATIBLE_SCHEMA_VERSIONS = {
+    LEGACY_SCHEMA_VERSION,
+    PREVIOUS_SCHEMA_VERSION,
+    PRIOR_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+}
 RAW_RETENTION_DAYS = 14
 HRES_GRID_QA_LIMIT_KM = 14.0
 HISTORY_GRID_QA_LIMIT_KM = 13.5
@@ -72,7 +79,14 @@ HRES_VARIABLES = [
     "wind_gusts_10m",
 ]
 HRES_FALLBACK_SOLAR = "shortwave_radiation"
-ENSEMBLE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gusts_10m"]
+ENSEMBLE_VARIABLES = [
+    "temperature_2m",
+    "precipitation",
+    "snowfall",
+    "wind_gusts_10m",
+    "cloud_cover",
+    "cloud_cover_low",
+]
 LONG_RANGE_MODEL_ID = "ncep_gefs05"
 LONG_RANGE_MODEL = "GFS Ensemble 0.5°"
 LONG_RANGE_ENSEMBLE_MEMBERS = 31
@@ -82,6 +96,51 @@ LONG_RANGE_LEAD_END = 35
 LONG_RANGE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gusts_10m"]
 LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
 LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
+GEFS_NEAR_MODEL_ID = "ncep_gefs025"
+GEFS_NEAR_MODEL = "GFS Ensemble 0.25°"
+GEFS_NEAR_RESOLUTION = "0.25° (~25 km)"
+GEFS_NEAR_FORECAST_DAYS = 10
+GEFS_LONG_MODEL_ID = "ncep_gefs05"
+GEFS_LONG_MODEL = "GFS Ensemble 0.5°"
+GEFS_LONG_RESOLUTION = "0.5° (~50 km)"
+GEFS_LONG_FORECAST_DAYS = 35
+GEFS_ENSEMBLE_MEMBERS = 31
+GEFS_GRID_QA_LIMITS_KM = {"near_range": 25.0, "long_range": 40.0}
+GEFS_CACHE_DIR = ROOT / "data" / "cache" / "gefs"
+GEFS_TRAVEL_CUTOFF_DATE = dt.date(2026, 10, 6)
+GEFS_CORE_VARIABLES = [
+    "temperature_2m",
+    "precipitation",
+    "snowfall",
+    "cloud_cover",
+    "cloud_cover_low",
+    "cloud_cover_mid",
+    "cloud_cover_high",
+    "wind_speed_10m",
+    "wind_gusts_10m",
+    "relative_humidity_2m",
+]
+GEFS_OPTIONAL_SOLAR_VARIABLES = ("shortwave_radiation", "sunshine_duration")
+GEFS_PHASE_RULE_VERSION = "gefs_event_phase_v1"
+GEFS_PHASE_THRESHOLDS = {
+    "cloud_cover_pct": 70.0,
+    "cloud_cover_low_pct": 50.0,
+    "precipitation_mm": 0.5,
+    "snowfall_cm": 0.1,
+    "cold_daily_mean_drop_c": 3.0,
+    "cold_daily_tmin_c": 0.0,
+    "minimum_event_duration_hours": 3,
+    "maximum_event_gap_hours": 6,
+    "high_phase_support": 0.7,
+    "medium_phase_support": 0.5,
+    "high_phase_spread_hours": 12,
+    "medium_phase_spread_hours": 24,
+}
+GEFS_WINDOW_DEFINITIONS = {
+    "MORNING": (8, 12),
+    "AFTERNOON": (12, 18),
+    "NIGHT": (18, 8),
+}
 CORE_REGION_IDS = ("baihaba", "kanas", "hemu", "keketuohai")
 HISTORY_MODEL = "ECMWF IFS 9 km historical weather / analysis"
 HISTORY_MODEL_PARAMETER = "ecmwf_ifs"
@@ -1695,7 +1754,7 @@ def _weather_events_cache_identity_mismatches(
         key for key, value in expected.items()
         if actual.get(key) != value
     ]
-    if cache.get("schema_version") not in {PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if cache.get("schema_version") not in COMPATIBLE_SCHEMA_VERSIONS:
         mismatches.append("schema_version")
     if cache.get("cache_schema_version") != WEATHER_EVENTS_CACHE_SCHEMA_VERSION:
         mismatches.append("cache_schema_version")
@@ -5028,6 +5087,865 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
     )
 
 
+def _gefs_member_suffixes(hourly: dict, variable: str) -> list[str]:
+    """Return the control/member suffixes actually returned for one variable."""
+    if not isinstance(hourly.get(variable), list):
+        return []
+    keys = [key for key in ensemble_series_keys(hourly, variable) if key in hourly]
+    return [key.removeprefix(variable) for key in keys]
+
+
+def _gefs_member_id(suffix: str) -> str:
+    return "control" if not suffix else suffix.removeprefix("_")
+
+
+def _gefs_value_key(variable: str, suffix: str) -> str:
+    return f"{variable}{suffix}"
+
+
+def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
+    """Validate GEFS member series without treating unavailable optional fields as zero."""
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    variable_counts = {
+        variable: len(_gefs_member_suffixes(hourly, variable))
+        for variable in GEFS_CORE_VARIABLES
+    }
+    missing_variables = [variable for variable, count in variable_counts.items() if count == 0]
+    present_variables = [variable for variable, count in variable_counts.items() if count]
+    candidate_suffixes = set(_gefs_member_suffixes(hourly, "temperature_2m"))
+    if not candidate_suffixes:
+        candidate_suffixes = set(
+            suffix
+            for variable in present_variables
+            for suffix in _gefs_member_suffixes(hourly, variable)
+        )
+    valid_by_variable: dict[str, list[str]] = {}
+    array_length_mismatch = []
+    null_data_series = []
+    partial_data_series = []
+    for variable in present_variables:
+        valid_suffixes = []
+        for suffix in _gefs_member_suffixes(hourly, variable):
+            values = hourly.get(_gefs_value_key(variable, suffix))
+            if not isinstance(values, list) or len(values) != len(times):
+                array_length_mismatch.append(_gefs_value_key(variable, suffix))
+                continue
+            if all(value is None for value in values):
+                null_data_series.append(_gefs_value_key(variable, suffix))
+                continue
+            if any(value is None for value in values):
+                partial_data_series.append(_gefs_value_key(variable, suffix))
+            valid_suffixes.append(suffix)
+        valid_by_variable[variable] = valid_suffixes
+    # Some currently documented GEFS fields are returned as a full array of
+    # nulls for this region/model.  That is an unavailable variable, not an
+    # invalidation of otherwise usable temperature/precipitation members.
+    unavailable_variables = [
+        variable for variable in present_variables
+        if not valid_by_variable.get(variable)
+    ]
+    missing_variables = sorted(set(missing_variables) | set(unavailable_variables))
+    usable_variables = [
+        variable for variable in present_variables
+        if variable not in unavailable_variables
+    ]
+    required_for_intersection = usable_variables
+    common_suffixes = set(candidate_suffixes)
+    for variable in required_for_intersection:
+        common_suffixes &= set(valid_by_variable.get(variable, []))
+    ordered_suffixes = [
+        suffix for suffix in _gefs_member_suffixes(hourly, "temperature_2m")
+        if suffix in common_suffixes
+    ]
+    if not ordered_suffixes:
+        ordered_suffixes = sorted(common_suffixes)
+    temperature_available = bool(valid_by_variable.get("temperature_2m"))
+    member_check_status = "PASS" if (
+        bool(times)
+        and temperature_available
+        and len(ordered_suffixes) == GEFS_ENSEMBLE_MEMBERS
+        and not array_length_mismatch
+        and not null_data_series
+        and not partial_data_series
+        and not missing_variables
+    ) else "PARTIAL" if bool(times) and temperature_available and ordered_suffixes else "FAIL"
+    valid = member_check_status != "FAIL"
+    return valid, {
+        "status": member_check_status,
+        "expected_members": GEFS_ENSEMBLE_MEMBERS,
+        "members_valid": len(ordered_suffixes),
+        "member_suffixes": ordered_suffixes,
+        "member_ids": [_gefs_member_id(suffix) for suffix in ordered_suffixes],
+        "actual_member_counts_by_variable": variable_counts,
+        "missing_variables": missing_variables,
+        "unavailable_variables": unavailable_variables,
+        "array_length_mismatch": sorted(set(array_length_mismatch)),
+        "null_data_series": sorted(set(null_data_series)),
+        "partial_data_series": sorted(set(partial_data_series)),
+        "valid_series_by_variable": valid_by_variable,
+    }
+
+
+def _gefs_time_groups(times: list[str], cutoff_date: dt.date) -> dict[str, list[int]]:
+    groups: dict[str, list[int]] = {}
+    for index, value in enumerate(times):
+        try:
+            local_time = parse_local_api_time(value)
+        except (TypeError, ValueError):
+            continue
+        if local_time.date() <= cutoff_date:
+            groups.setdefault(local_time.date().isoformat(), []).append(index)
+    return groups
+
+
+def _gefs_member_aggregate(
+    hourly: dict,
+    suffix: str,
+    indices: list[int],
+    solar_variable: str | None = None,
+) -> dict | None:
+    def values(variable: str) -> list[float]:
+        return _values_for_indices(hourly, _gefs_value_key(variable, suffix), indices)
+
+    temperatures = values("temperature_2m")
+    if not temperatures:
+        return None
+    precipitation = values("precipitation")
+    snowfall = values("snowfall")
+    clouds = values("cloud_cover")
+    low_clouds = values("cloud_cover_low")
+    wind = values("wind_speed_10m")
+    gusts = values("wind_gusts_10m")
+    humidity = values("relative_humidity_2m")
+    solar = values(solar_variable) if solar_variable else []
+    result = {
+        "temperature_mean_c": round(mean(temperatures), 3),
+        "temperature_min_c": round(min(temperatures), 3),
+        "temperature_max_c": round(max(temperatures), 3),
+        "precipitation_mm": round(sum(precipitation), 3) if precipitation else None,
+        "snowfall_cm": round(sum(snowfall), 3) if snowfall else None,
+        "cloud_cover_pct": round(mean(clouds), 3) if clouds else None,
+        "cloud_cover_low_pct": round(mean(low_clouds), 3) if low_clouds else None,
+        "wind_speed_kmh": round(mean(wind), 3) if wind else None,
+        "wind_gust_kmh": round(max(gusts), 3) if gusts else None,
+        "relative_humidity_pct": round(mean(humidity), 3) if humidity else None,
+    }
+    if solar:
+        result["solar_value"] = round(sum(solar), 3) if solar_variable == "sunshine_duration" else round(mean(solar), 3)
+    return result
+
+
+def _gefs_distribution(values: list[float], members_valid: int) -> dict:
+    stats = ensemble_statistics(values)
+    stats["available_members"] = len(values)
+    stats["members_valid"] = members_valid
+    return stats
+
+
+def _gefs_probability(
+    values: list[float],
+    predicate,
+    members_valid: int,
+) -> dict:
+    matching_members = sum(bool(predicate(value)) for value in values)
+    return {
+        "members": matching_members,
+        "members_valid": members_valid,
+        # An unsupported variable has no valid denominator.  Returning 0.0
+        # would incorrectly turn "unavailable" into "no signal".
+        "probability": round(matching_members / members_valid, 3)
+        if members_valid and values
+        else None,
+        "available_members": len(values),
+    }
+
+
+def _gefs_distribution_summary(member_values: list[dict], members_valid: int) -> dict:
+    def metric(name: str) -> list[float]:
+        return [float(item[name]) for item in member_values if item.get(name) is not None]
+
+    temperature_mean = metric("temperature_mean_c")
+    temperature_min = metric("temperature_min_c")
+    temperature_max = metric("temperature_max_c")
+    precipitation = metric("precipitation_mm")
+    snowfall = metric("snowfall_cm")
+    clouds = metric("cloud_cover_pct")
+    low_clouds = metric("cloud_cover_low_pct")
+    gusts = metric("wind_gust_kmh")
+    wind = metric("wind_speed_kmh")
+    solar = metric("solar_value")
+    summary = {
+        "temperature_2m": _gefs_distribution(temperature_mean, members_valid),
+        "temperature_2m_min": _gefs_distribution(temperature_min, members_valid),
+        "temperature_2m_max": _gefs_distribution(temperature_max, members_valid),
+        "cloud_cover": _gefs_distribution(clouds, members_valid),
+        "cloud_cover_low": _gefs_distribution(low_clouds, members_valid),
+        "precipitation": _gefs_distribution(precipitation, members_valid),
+        "snowfall": _gefs_distribution(snowfall, members_valid),
+        "wind_speed_10m": _gefs_distribution(wind, members_valid),
+        "wind_gusts_10m": _gefs_distribution(gusts, members_valid),
+        "probabilities": {
+            "precipitation_gt_0_5mm": _gefs_probability(precipitation, lambda value: value > 0.5, members_valid),
+            "precipitation_gt_2mm": _gefs_probability(precipitation, lambda value: value > 2, members_valid),
+            "precipitation_gt_5mm": _gefs_probability(precipitation, lambda value: value > 5, members_valid),
+            "snowfall_gt_0_5cm": _gefs_probability(snowfall, lambda value: value > 0.5, members_valid),
+            "snowfall_gt_1cm": _gefs_probability(snowfall, lambda value: value > 1, members_valid),
+            "snowfall_gt_3cm": _gefs_probability(snowfall, lambda value: value > 3, members_valid),
+            "snowfall_gt_5cm": _gefs_probability(snowfall, lambda value: value > 5, members_valid),
+            "gust_gt_30kmh": _gefs_probability(gusts, lambda value: value > 30, members_valid),
+            "gust_gt_40kmh": _gefs_probability(gusts, lambda value: value > 40, members_valid),
+            "gust_gt_50kmh": _gefs_probability(gusts, lambda value: value > 50, members_valid),
+            "cloud_cover_gt_50pct": _gefs_probability(clouds, lambda value: value > 50, members_valid),
+            "cloud_cover_gt_70pct": _gefs_probability(clouds, lambda value: value > 70, members_valid),
+            "cloud_cover_gt_90pct": _gefs_probability(clouds, lambda value: value > 90, members_valid),
+            "cloud_cover_low_gt_30pct": _gefs_probability(low_clouds, lambda value: value > 30, members_valid),
+            "cloud_cover_low_gt_50pct": _gefs_probability(low_clouds, lambda value: value > 50, members_valid),
+            "cloud_cover_low_gt_70pct": _gefs_probability(low_clouds, lambda value: value > 70, members_valid),
+            "temperature_lt_0c": _gefs_probability(temperature_min, lambda value: value < 0, members_valid),
+            "temperature_lt_minus5c": _gefs_probability(temperature_min, lambda value: value < -5, members_valid),
+            "daily_tmax_lt_0c": _gefs_probability(temperature_max, lambda value: value < 0, members_valid),
+            "daily_tmin_lt_minus5c": _gefs_probability(temperature_min, lambda value: value < -5, members_valid),
+        },
+    }
+    if solar:
+        summary["solar"] = _gefs_distribution(solar, members_valid)
+    else:
+        summary["solar"] = None
+    return summary
+
+
+def _gefs_window_indices(times: list[str], target_date: dt.date, window: str, cutoff_date: dt.date) -> list[int]:
+    indices = []
+    for index, value in enumerate(times):
+        try:
+            local_time = parse_local_api_time(value)
+        except (TypeError, ValueError):
+            continue
+        if local_time.date() > cutoff_date:
+            continue
+        if window == "MORNING" and local_time.date() == target_date and 8 <= local_time.hour < 12:
+            indices.append(index)
+        elif window == "AFTERNOON" and local_time.date() == target_date and 12 <= local_time.hour < 18:
+            indices.append(index)
+        elif window == "NIGHT":
+            if local_time.date() == target_date and local_time.hour >= 18:
+                indices.append(index)
+            elif local_time.date() == target_date + dt.timedelta(days=1) and local_time.hour < 8 and local_time.date() <= cutoff_date:
+                indices.append(index)
+    return indices
+
+
+def _gefs_event_values(hourly: dict, suffix: str, event_type: str, times: list[str], cutoff_date: dt.date) -> tuple[list[dt.datetime], list[float]]:
+    event_times = []
+    activity = []
+    for index, value in enumerate(times):
+        try:
+            local_time = parse_local_api_time(value)
+        except (TypeError, ValueError):
+            continue
+        if local_time.date() > cutoff_date:
+            continue
+        def one(variable: str) -> float | None:
+            values = hourly.get(_gefs_value_key(variable, suffix))
+            if not isinstance(values, list) or index >= len(values) or values[index] is None:
+                return None
+            return float(values[index])
+        cloud = one("cloud_cover")
+        low_cloud = one("cloud_cover_low")
+        precipitation = one("precipitation")
+        snowfall = one("snowfall")
+        if event_type == "CLOUD_EVENT":
+            active = (cloud is not None and cloud >= GEFS_PHASE_THRESHOLDS["cloud_cover_pct"]) or (
+                low_cloud is not None and low_cloud >= GEFS_PHASE_THRESHOLDS["cloud_cover_low_pct"]
+            )
+            value_score = max(cloud or 0, low_cloud or 0)
+        elif event_type == "PRECIP_EVENT":
+            active = precipitation is not None and precipitation >= GEFS_PHASE_THRESHOLDS["precipitation_mm"]
+            value_score = precipitation or 0
+        elif event_type == "SNOW_EVENT":
+            active = snowfall is not None and snowfall > GEFS_PHASE_THRESHOLDS["snowfall_cm"]
+            value_score = snowfall or 0
+        else:
+            continue
+        event_times.append(local_time)
+        activity.append(value_score if active else 0.0)
+    return event_times, activity
+
+
+def _gefs_primary_interval(times: list[dt.datetime], activity: list[float]) -> dict | None:
+    active_indices = [index for index, value in enumerate(activity) if value > 0]
+    if not active_indices:
+        return None
+    intervals = []
+    current = [active_indices[0]]
+    for index in active_indices[1:]:
+        gap = (times[index] - times[current[-1]]).total_seconds() / 3600
+        if gap <= GEFS_PHASE_THRESHOLDS["maximum_event_gap_hours"]:
+            current.append(index)
+        else:
+            intervals.append(current)
+            current = [index]
+    intervals.append(current)
+    candidates = []
+    for interval in intervals:
+        duration = (times[interval[-1]] - times[interval[0]]).total_seconds() / 3600 + 1
+        if duration < GEFS_PHASE_THRESHOLDS["minimum_event_duration_hours"]:
+            continue
+        peak_index = max(interval, key=lambda index: activity[index])
+        candidates.append({
+            "event_start": times[interval[0]],
+            "event_peak": times[peak_index],
+            "event_end": times[interval[-1]],
+            "peak_value": round(activity[peak_index], 3),
+            "duration_hours": round(duration, 3),
+        })
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item["duration_hours"], item["peak_value"]))
+
+
+def _gefs_cold_interval(member_days: dict[str, dict]) -> dict | None:
+    ordered = sorted(member_days.items())
+    active = []
+    previous = None
+    for day, values in ordered:
+        mean_value = values.get("temperature_mean_c")
+        min_value = values.get("temperature_min_c")
+        drop = (
+            float(mean_value) - float(previous.get("temperature_mean_c"))
+            if previous and mean_value is not None and previous.get("temperature_mean_c") is not None
+            else 0
+        )
+        is_active = drop <= -GEFS_PHASE_THRESHOLDS["cold_daily_mean_drop_c"] or (
+            min_value is not None and float(min_value) <= GEFS_PHASE_THRESHOLDS["cold_daily_tmin_c"]
+        )
+        if is_active:
+            active.append(day)
+        previous = values
+    if not active:
+        return None
+    start = dt.datetime.combine(dt.date.fromisoformat(active[0]), dt.time(0), tzinfo=LOCAL_TZ)
+    end = dt.datetime.combine(dt.date.fromisoformat(active[-1]), dt.time(23, 0), tzinfo=LOCAL_TZ)
+    peak_day = min(active, key=lambda value: member_days[value].get("temperature_mean_c", 999))
+    peak = dt.datetime.combine(dt.date.fromisoformat(peak_day), dt.time(12), tzinfo=LOCAL_TZ)
+    return {"event_start": start, "event_peak": peak, "event_end": end, "peak_value": round(float(member_days[peak_day].get("temperature_mean_c", 0)), 3), "duration_hours": round((end - start).total_seconds() / 3600 + 1, 3)}
+
+
+def _gefs_iso(value: dt.datetime | None) -> str | None:
+    return value.astimezone(LOCAL_TZ).isoformat(timespec="minutes") if value else None
+
+
+def _gefs_time_stats(values: list[dt.datetime]) -> dict:
+    if not values:
+        return {"p25": None, "median": None, "p75": None, "earliest": None, "latest": None}
+    timestamps = [value.timestamp() for value in values]
+    return {
+        "p25": _gefs_iso(dt.datetime.fromtimestamp(percentile(timestamps, 0.25), tz=LOCAL_TZ)),
+        "median": _gefs_iso(dt.datetime.fromtimestamp(percentile(timestamps, 0.5), tz=LOCAL_TZ)),
+        "p75": _gefs_iso(dt.datetime.fromtimestamp(percentile(timestamps, 0.75), tz=LOCAL_TZ)),
+        "earliest": _gefs_iso(min(values)),
+        "latest": _gefs_iso(max(values)),
+    }
+
+
+def _gefs_phase_confidence(support: float, spread_hours: float, multimodal: bool) -> str:
+    if multimodal:
+        return "LOW"
+    if support >= GEFS_PHASE_THRESHOLDS["high_phase_support"] and spread_hours <= GEFS_PHASE_THRESHOLDS["high_phase_spread_hours"]:
+        return "HIGH"
+    if support >= GEFS_PHASE_THRESHOLDS["medium_phase_support"] and spread_hours <= GEFS_PHASE_THRESHOLDS["medium_phase_spread_hours"]:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _gefs_event_phase(
+    event_type: str,
+    events: list[dict],
+    members_valid: int,
+) -> dict:
+    if not events or not members_valid:
+        return {
+            "status": "NO_SIGNAL",
+            "rule_version": GEFS_PHASE_RULE_VERSION,
+            "event_type": event_type,
+            "members_with_event": 0,
+            "members_valid": members_valid,
+            "member_support": 0.0 if members_valid else None,
+            "phase_confidence": "LOW",
+            "phase_spread_hours": None,
+            "multimodal": False,
+            "event_start": _gefs_time_stats([]),
+            "event_peak": _gefs_time_stats([]),
+            "event_end": _gefs_time_stats([]),
+            "event_day_distribution": {"none": {"members": members_valid, "percentage": 1.0} if members_valid else {}},
+        }
+    starts = [item["event_start"] for item in events]
+    peaks = [item["event_peak"] for item in events]
+    ends = [item["event_end"] for item in events]
+    support = len(events) / members_valid
+    peak_bins: dict[str, int] = {}
+    for value in peaks:
+        key = value.date().isoformat()
+        peak_bins[key] = peak_bins.get(key, 0) + 1
+    distribution = {
+        key: {"members": count, "percentage": round(count / members_valid, 3)}
+        for key, count in sorted(peak_bins.items())
+    }
+    none_count = max(0, members_valid - len(events))
+    if none_count:
+        distribution["none"] = {"members": none_count, "percentage": round(none_count / members_valid, 3)}
+    sorted_peaks = sorted(peaks)
+    multimodal = False
+    if len(peak_bins) >= 2:
+        strong_bins = [key for key, count in peak_bins.items() if count / members_valid >= 0.2]
+        if len(strong_bins) >= 2:
+            multimodal = (dt.date.fromisoformat(max(strong_bins)) - dt.date.fromisoformat(min(strong_bins))).days >= 1
+    start_stats = _gefs_time_stats(starts)
+    peak_stats = _gefs_time_stats(peaks)
+    end_stats = _gefs_time_stats(ends)
+    spread_candidates = []
+    for stats in (start_stats, peak_stats, end_stats):
+        if stats["p25"] and stats["p75"]:
+            spread_candidates.append(
+                (dt.datetime.fromisoformat(stats["p75"]) - dt.datetime.fromisoformat(stats["p25"])).total_seconds() / 3600
+            )
+    spread = round(max(spread_candidates), 3) if spread_candidates else None
+    spread_for_confidence = spread if spread is not None else 999
+    return {
+        "status": "SIGNAL",
+        "rule_version": GEFS_PHASE_RULE_VERSION,
+        "event_type": event_type,
+        "members_with_event": len(events),
+        "members_valid": members_valid,
+        "member_support": round(support, 3),
+        "phase_confidence": _gefs_phase_confidence(support, spread_for_confidence, multimodal),
+        "phase_spread_hours": spread,
+        "multimodal": multimodal,
+        "event_start": start_stats,
+        "event_peak": peak_stats,
+        "event_end": end_stats,
+        "event_day_distribution": distribution,
+    }
+
+
+def _gefs_event_phases(hourly: dict, member_suffixes: list[str], member_daily: dict[str, dict[str, dict]], cutoff_date: dt.date) -> dict:
+    times = hourly.get("time") or []
+    result = {}
+    for event_type in ("CLOUD_EVENT", "PRECIP_EVENT", "SNOW_EVENT"):
+        events = []
+        for suffix in member_suffixes:
+            event_times, activity = _gefs_event_values(hourly, suffix, event_type, times, cutoff_date)
+            interval = _gefs_primary_interval(event_times, activity)
+            if interval:
+                interval["member_id"] = _gefs_member_id(suffix)
+                events.append(interval)
+        result[event_type] = _gefs_event_phase(event_type, events, len(member_suffixes))
+    cold_events = []
+    for suffix in member_suffixes:
+        daily = {
+            date_key: values.get(suffix)
+            for date_key, values in member_daily.items()
+            if values.get(suffix)
+        }
+        interval = _gefs_cold_interval(daily)
+        if interval:
+            interval["member_id"] = _gefs_member_id(suffix)
+            cold_events.append(interval)
+    result["COLD_EVENT"] = _gefs_event_phase("COLD_EVENT", cold_events, len(member_suffixes))
+    return result
+
+
+def _build_gefs_segment(record: dict, segment_key: str, model_id: str, model: str, resolution: str, cutoff_date: dt.date) -> dict:
+    hourly = record.get("hourly") or {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    member_valid, member_check = _gefs_member_check(hourly)
+    suffixes = member_check.get("member_suffixes", [])
+    groups = _gefs_time_groups(times, cutoff_date)
+    solar_variable = record.get("solar_variable") if record.get("solar_variable") in GEFS_OPTIONAL_SOLAR_VARIABLES else None
+    member_daily: dict[str, dict[str, dict]] = {}
+    daily_public = []
+    for day, indices in sorted(groups.items()):
+        per_member = {}
+        for suffix in suffixes:
+            aggregate = _gefs_member_aggregate(hourly, suffix, indices, solar_variable)
+            if aggregate:
+                per_member[suffix] = aggregate
+        member_daily[day] = per_member
+        daily_public.append({
+            "date": day,
+            "members_valid": len(suffixes),
+            "statistics": _gefs_distribution_summary(list(per_member.values()), len(suffixes)),
+        })
+    window_public: dict[str, dict] = {}
+    for day in sorted(groups):
+        target = dt.date.fromisoformat(day)
+        window_public[day] = {}
+        for window_name in GEFS_WINDOW_DEFINITIONS:
+            indices = _gefs_window_indices(times, target, window_name, cutoff_date)
+            per_member = {}
+            for suffix in suffixes:
+                aggregate = _gefs_member_aggregate(hourly, suffix, indices, solar_variable)
+                if aggregate:
+                    per_member[suffix] = aggregate
+            window_public[day][window_name] = {
+                "date": day,
+                "window": window_name,
+                "members_valid": len(suffixes),
+                "status": "OK" if per_member else "UNAVAILABLE",
+                "statistics": _gefs_distribution_summary(list(per_member.values()), len(suffixes)),
+            }
+    phase = _gefs_event_phases(hourly, suffixes, member_daily, cutoff_date)
+    forecast_start = times[0] if times else None
+    forecast_end = times[-1] if times else None
+    missing_variables = sorted(set(member_check.get("missing_variables", [])) | set(record.get("gefs_missing_variables", [])))
+    segment_status = "FAILED" if not member_valid else "OK" if member_check.get("status") == "PASS" and not missing_variables else "PARTIAL"
+    return {
+        "status": segment_status,
+        "segment": segment_key,
+        "source": "Open-Meteo",
+        "model": model,
+        "model_id": model_id,
+        "resolution": resolution,
+        "run_time": (record.get("response") or {}).get("model_run_initialization"),
+        "generated_at": (record.get("response") or {}).get("retrieval_time"),
+        "forecast_start": forecast_start,
+        "forecast_end": forecast_end,
+        "forecast_start_date": parse_local_api_time(forecast_start).date().isoformat() if forecast_start else None,
+        "forecast_end_date": parse_local_api_time(forecast_end).date().isoformat() if forecast_end else None,
+        "members_total": GEFS_ENSEMBLE_MEMBERS,
+        "members_valid": len(suffixes),
+        "missing_variables": missing_variables,
+        "daily": daily_public,
+        "windows": window_public,
+        "event_phases": phase,
+        "event_day_distribution": {
+            event_type.lower(): value.get("event_day_distribution", {})
+            for event_type, value in phase.items()
+        },
+        "stale": bool(record.get("stale")),
+        "cached_generated_at": record.get("cached_generated_at"),
+        "qa": {
+            "grid_scale_class": "coarse_ensemble" if segment_key == "long_range" else "medium_ensemble",
+            "expected_ensemble_members": GEFS_ENSEMBLE_MEMBERS,
+            "actual_ensemble_members": len(suffixes),
+            "member_series_check": member_check,
+            "timezone": (record.get("response") or {}).get("timezone"),
+            "utc_offset_seconds": (record.get("response") or {}).get("utc_offset_seconds"),
+            "forecast_cutoff_date": cutoff_date.isoformat(),
+            "forecast_cutoff_applied": True,
+            "last_available_timestamp": forecast_end,
+            "probability_denominator": "members_valid",
+            "final_status": "PASS" if segment_status == "OK" else segment_status,
+        },
+    }
+
+
+def _gefs_cache_path(model_id: str, point_id: str, cache_dir: Path | None = None) -> Path:
+    return (cache_dir or GEFS_CACHE_DIR) / model_id / f"{point_id}.json"
+
+
+def _gefs_cache_identity(point: dict, model_id: str, variables: list[str]) -> dict:
+    return {
+        "model_id": model_id,
+        "requested_coordinate": {"latitude": point.get("latitude"), "longitude": point.get("longitude")},
+        "timezone": TIMEZONE_NAME,
+        "cell_selection": "nearest",
+        "elevation": "nan",
+        "variables": list(variables),
+    }
+
+
+def _load_gefs_cache(point: dict, model_id: str, variables: list[str], cache_dir: Path | None = None) -> dict | None:
+    path = _gefs_cache_path(model_id, point["id"], cache_dir)
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if value.get("cache_identity") != _gefs_cache_identity(point, model_id, variables):
+        return None
+    record = value.get("record")
+    return copy.deepcopy(record) if isinstance(record, dict) else None
+
+
+def _write_gefs_cache(point: dict, model_id: str, variables: list[str], record: dict, cache_dir: Path | None = None) -> None:
+    path = _gefs_cache_path(model_id, point["id"], cache_dir)
+    write_json(path, {
+        "schema_version": SCHEMA_VERSION,
+        "cache_kind": "gefs_forecast_response",
+        "cache_identity": _gefs_cache_identity(point, model_id, variables),
+        "cached_generated_at": record.get("response", {}).get("retrieval_time"),
+        "record": record,
+    })
+
+
+def _fetch_gefs_optional_solar(
+    client: ApiClient,
+    record: dict,
+    point: dict,
+    params: dict[str, object],
+    label: str,
+) -> None:
+    missing = []
+    warnings = []
+    # The current Ensemble API does not document solar variables.  Make one
+    # explicit probe, then report both alternatives as unavailable rather than
+    # spending another retry cycle on a known unsupported field.
+    for variable in GEFS_OPTIONAL_SOLAR_VARIABLES[:1]:
+        try:
+            payload, url = client.get_json(
+                OPEN_METEO_ENDPOINTS["ensemble"],
+                {**params, "hourly": variable},
+                f"{label}:{variable}",
+            )
+        except OpenMeteoError as error:
+            missing.extend(GEFS_OPTIONAL_SOLAR_VARIABLES)
+            warnings.append(f"{variable}:{error.reason}")
+            break
+        hourly = payload.get("hourly") if isinstance(payload.get("hourly"), dict) else {}
+        values = hourly.get(variable)
+        primary_response = record.get("response") or {}
+        if (
+            payload.get("timezone") != TIMEZONE_NAME
+            or payload.get("utc_offset_seconds") != 28800
+            or (payload.get("latitude"), payload.get("longitude")) != (
+                primary_response.get("grid_coordinate", {}).get("latitude"),
+                primary_response.get("grid_coordinate", {}).get("longitude"),
+            )
+            or not isinstance(values, list)
+            or len(values) != len(record.get("hourly", {}).get("time", []))
+            or any(value is None for value in values)
+        ):
+            missing.extend(GEFS_OPTIONAL_SOLAR_VARIABLES)
+            warnings.append(f"{variable}:OPTIONAL_VARIABLE_QA_FAIL")
+            break
+        record.setdefault("hourly", {})[variable] = values
+        record["solar_variable"] = variable
+        record.setdefault("response", {}).setdefault("optional_variable_urls", {})[variable] = url
+        break
+    record["gefs_missing_variables"] = sorted(set(record.get("gefs_missing_variables", [])) | set(missing))
+    record.setdefault("qa", {}).setdefault("warnings", []).extend(warnings)
+
+
+def _fetch_gefs_segment(
+    config: dict,
+    point: dict,
+    client: ApiClient,
+    segment_key: str,
+    model_id: str,
+    model: str,
+    resolution: str,
+    forecast_days: int,
+    generated_at: str,
+    cutoff_date: dt.date,
+    *,
+    cache_dir: Path | None = None,
+    solar_capabilities: dict[str, bool] | None = None,
+) -> dict:
+    params = base_weather_params(point, models=model_id, forecast_days=forecast_days)
+    record = fetch_point(
+        client,
+        point=point,
+        source="Open-Meteo",
+        endpoint=OPEN_METEO_ENDPOINTS["ensemble"],
+        model=model,
+        params=params,
+        variables=GEFS_CORE_VARIABLES,
+        required_variables=["temperature_2m"],
+        grid_limit_km=GEFS_GRID_QA_LIMITS_KM[segment_key],
+        log_label=f"{point['id']}:GEFS_{segment_key.upper()}",
+        accepted_model_values=(model_id, model),
+        accepted_model_ids=(model_id,),
+        max_forecast_date=cutoff_date,
+    )
+    used_cache = False
+    if record.get("status") != "PASS":
+        cached = _load_gefs_cache(point, model_id, GEFS_CORE_VARIABLES, cache_dir)
+        if cached:
+            record = cached
+            record["stale"] = True
+            record["cached_generated_at"] = (cached.get("response") or {}).get("retrieval_time")
+            used_cache = True
+            log(f"[{point['id']}:GEFS_{segment_key.upper()}] STALE CACHE FALLBACK")
+    if record.get("status") == "PASS" and not used_cache:
+        capability = solar_capabilities.get(model_id) if solar_capabilities is not None else None
+        if capability is not False:
+            _fetch_gefs_optional_solar(client, record, point, params, f"{point['id']}:GEFS_{segment_key.upper()}")
+            if solar_capabilities is not None:
+                solar_capabilities[model_id] = bool(record.get("solar_variable"))
+        else:
+            record["gefs_missing_variables"] = sorted(
+                set(record.get("gefs_missing_variables", [])) | set(GEFS_OPTIONAL_SOLAR_VARIABLES)
+            )
+        _write_gefs_cache(point, model_id, GEFS_CORE_VARIABLES, record, cache_dir)
+    record.setdefault("gefs_missing_variables", [])
+    record.setdefault("gefs_segment", segment_key)
+    record.setdefault("gefs_model_id", model_id)
+    return record
+
+
+def run_gefs(
+    config: dict,
+    client: ApiClient,
+    generated_at: str,
+    data_date: str,
+    *,
+    cutoff_date: dt.date = GEFS_TRAVEL_CUTOFF_DATE,
+    cache_dir: Path | None = None,
+) -> dict:
+    """Fetch the independent GEFS chain and publish member-distribution evidence."""
+    points = active_points(config)
+    raw_points: dict[str, dict] = {}
+    public_points: dict[str, dict] = {}
+    near_success = 0
+    long_success = 0
+    successful_points = 0
+    partial_points = 0
+    failed_points = 0
+    missing_variables: set[str] = set()
+    qa_warnings: list[str] = []
+    solar_capabilities: dict[str, bool] = {}
+    coverage_starts = []
+    coverage_ends = []
+    stale = False
+    for point_id, point in points.items():
+        segment_records = {}
+        segment_public = {}
+        for segment_key, model_id, model, resolution, forecast_days in (
+            ("near_range", GEFS_NEAR_MODEL_ID, GEFS_NEAR_MODEL, GEFS_NEAR_RESOLUTION, GEFS_NEAR_FORECAST_DAYS),
+            ("long_range", GEFS_LONG_MODEL_ID, GEFS_LONG_MODEL, GEFS_LONG_RESOLUTION, GEFS_LONG_FORECAST_DAYS),
+        ):
+            record = _fetch_gefs_segment(
+                config,
+                point,
+                client,
+                segment_key,
+                model_id,
+                model,
+                resolution,
+                forecast_days,
+                generated_at,
+                cutoff_date,
+                cache_dir=cache_dir,
+                solar_capabilities=solar_capabilities,
+            )
+            segment_records[segment_key] = record
+            if record.get("stale"):
+                stale = True
+            segment = _build_gefs_segment(record, segment_key, model_id, model, resolution, cutoff_date)
+            segment_public[segment_key] = segment
+            missing_variables.update(segment.get("missing_variables") or [])
+            qa_warnings.extend(
+                f"{point_id}:{segment_key}:{warning}"
+                for warning in (record.get("qa") or {}).get("warnings", [])
+            )
+            if segment.get("status") in {"OK", "PARTIAL"}:
+                if segment_key == "near_range":
+                    near_success += 1
+                else:
+                    long_success += 1
+                if segment.get("forecast_start_date"):
+                    coverage_starts.append(segment["forecast_start_date"])
+                if segment.get("forecast_end_date"):
+                    coverage_ends.append(segment["forecast_end_date"])
+        raw_points[point_id] = {"near_range": segment_records["near_range"], "long_range": segment_records["long_range"]}
+        segment_statuses = [value.get("status") for value in segment_public.values()]
+        point_status = "OK" if all(value == "OK" for value in segment_statuses) else "PARTIAL" if any(value in {"OK", "PARTIAL"} for value in segment_statuses) else "FAILED"
+        if point_status == "OK":
+            successful_points += 1
+        elif point_status == "PARTIAL":
+            partial_points += 1
+        else:
+            failed_points += 1
+        public_points[point_id] = {
+            "point_id": point_id,
+            "point": {
+                "name": point.get("name"),
+                "region": point.get("region"),
+                "status": point.get("status"),
+                "latitude": point.get("latitude"),
+                "longitude": point.get("longitude"),
+            },
+            "status": point_status,
+            "usable_for_main_chain": True,
+            "near_range": segment_public["near_range"],
+            "long_range": segment_public["long_range"],
+            "qa": {
+                "requested_coordinate": {"latitude": point.get("latitude"), "longitude": point.get("longitude")},
+                "segments": {key: value.get("qa") for key, value in segment_public.items()},
+                "final_status": point_status,
+                "stale": any(value.get("stale") for value in segment_public.values()),
+            },
+        }
+    for point_id, point in config.get("points", {}).items():
+        if point_id not in public_points:
+            log(f"[{point_id}] GEFS SKIPPED: {point.get('status', 'NOT_VERIFIED')}")
+    if not points or successful_points + partial_points == 0:
+        module_status = "FAILED"
+    elif failed_points or partial_points or near_success < len(points) or long_success < len(points):
+        module_status = "PARTIAL"
+    else:
+        module_status = "OK"
+    return module_header(
+        "gefs",
+        generated_at,
+        data_date,
+        module_status,
+        source="Open-Meteo",
+        endpoint=OPEN_METEO_ENDPOINTS["ensemble"],
+        model="NOAA GFS Ensemble (independent GEFS chain)",
+        near_range_model=GEFS_NEAR_MODEL,
+        near_range_model_id=GEFS_NEAR_MODEL_ID,
+        near_range_resolution=GEFS_NEAR_RESOLUTION,
+        near_range_forecast_days=GEFS_NEAR_FORECAST_DAYS,
+        long_range_model=GEFS_LONG_MODEL,
+        long_range_model_id=GEFS_LONG_MODEL_ID,
+        long_range_resolution=GEFS_LONG_RESOLUTION,
+        long_range_forecast_days=GEFS_LONG_FORECAST_DAYS,
+        members_total=GEFS_ENSEMBLE_MEMBERS,
+        members_valid=min(
+            [
+                segment.get("members_valid")
+                for point in public_points.values()
+                for segment in (point.get("near_range"), point.get("long_range"))
+                if isinstance(segment, dict) and segment.get("members_valid")
+            ]
+            or [None]
+        ),
+        coverage_start=min(coverage_starts) if coverage_starts else None,
+        coverage_end=min(max(coverage_ends), cutoff_date.isoformat()) if coverage_ends else None,
+        forecast_cutoff_date=cutoff_date.isoformat(),
+        missing_variables=sorted(missing_variables),
+        qa_warnings=sorted(set(qa_warnings)),
+        stale=stale,
+        cache={
+            "enabled": True,
+            "directory": str((cache_dir or GEFS_CACHE_DIR).relative_to(ROOT)) if (cache_dir or GEFS_CACHE_DIR).is_relative_to(ROOT) else str(cache_dir or GEFS_CACHE_DIR),
+            "key_fields": ["model_id", "requested_coordinate", "timezone", "cell_selection", "elevation", "variables"],
+            "stale_fallback_allowed": True,
+        },
+        points=public_points,
+        raw_points=raw_points,
+        excluded_points=excluded_points(config),
+        successful_points=successful_points,
+        partial_points=partial_points,
+        failed_points=failed_points,
+        qa={
+            "near_range_successful_points": near_success,
+            "long_range_successful_points": long_success,
+            "expected_members": GEFS_ENSEMBLE_MEMBERS,
+            "probability_denominator": "members_valid",
+            "forecast_cutoff_date": cutoff_date.isoformat(),
+            "formal_summary_cutoff_enforced": True,
+            "independent_from_ecmwf_ensemble": True,
+            "final_status": module_status,
+        },
+        interpretation_boundary="GEFS distributions and event phases are probabilistic support for GFS deterministic output; they are not village-level precise forecasts or phenology conclusions.",
+    )
+
+
 LONG_RANGE_SIGNAL_ORDER = ("NONE", "WEAK", "MODERATE", "STRONG")
 LONG_RANGE_UNCERTAINTY_ORDER = ("LOW", "MODERATE", "HIGH", "VERY_HIGH")
 
@@ -7035,6 +7953,451 @@ def weather_event_light_summary(weather_events: dict | None, region_id: str) -> 
     }
 
 
+def _forecast_hour_indices(record: dict, target_date: dt.date, window: str, cutoff_date: dt.date) -> list[int]:
+    hourly = record.get("hourly") or {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    return _gefs_window_indices(times, target_date, window, cutoff_date)
+
+
+def _deterministic_hourly_window(record: dict | None, target_date: dt.date, window: str, cutoff_date: dt.date) -> dict:
+    if not record or record.get("status") != "PASS":
+        return {"status": "UNAVAILABLE", "reason": "DETERMINISTIC_MODULE_UNAVAILABLE"}
+    hourly = record.get("hourly") or {}
+    indices = _forecast_hour_indices(record, target_date, window, cutoff_date)
+    if not indices:
+        return {"status": "UNAVAILABLE", "reason": "WINDOW_OUTSIDE_FORECAST_HORIZON"}
+
+    def values(variable: str) -> list[float]:
+        return _values_for_indices(hourly, variable, indices)
+
+    temperatures = values("temperature_2m")
+    clouds = values("cloud_cover")
+    low_clouds = values("cloud_cover_low")
+    precipitation = values("precipitation")
+    snowfall = values("snowfall")
+    gusts = values("wind_gusts_10m")
+    wind = values("wind_speed_10m")
+    solar_variable = record.get("solar_variable")
+    solar = values(solar_variable) if solar_variable else []
+    result = {
+        "status": "OK",
+        "window": window,
+        "date": target_date.isoformat(),
+        "hours_included": len(indices),
+        "total_cloud_pct": round(mean(clouds), 3) if clouds else None,
+        "low_cloud_pct": round(mean(low_clouds), 3) if low_clouds else None,
+        "precipitation_mm": round(sum(precipitation), 3) if precipitation else None,
+        "snowfall_cm": round(sum(snowfall), 3) if snowfall else None,
+        "temperature_mean_c": round(mean(temperatures), 3) if temperatures else None,
+        "temperature_min_c": round(min(temperatures), 3) if temperatures else None,
+        "temperature_max_c": round(max(temperatures), 3) if temperatures else None,
+        "gust_max_kmh": round(max(gusts), 3) if gusts else None,
+        "wind_speed_mean_kmh": round(mean(wind), 3) if wind else None,
+        "sunshine_or_shortwave": (
+            {"variable": solar_variable, "value": round(sum(solar), 3)}
+            if solar and solar_variable == "sunshine_duration"
+            else {"variable": solar_variable, "value": round(mean(solar), 3)}
+            if solar
+            else None
+        ),
+    }
+    if window == "NIGHT" and target_date == cutoff_date:
+        result["cutoff_truncated"] = True
+    return result
+
+
+def _deterministic_daily_summary(record: dict | None, target_date: dt.date, cutoff_date: dt.date) -> dict:
+    if not record or record.get("status") != "PASS":
+        return {"status": "UNAVAILABLE", "reason": "DETERMINISTIC_MODULE_UNAVAILABLE"}
+    date_key = target_date.isoformat()
+    item = next((day for day in record.get("daily", []) if day.get("date") == date_key), None)
+    if not item or target_date > cutoff_date:
+        return {"status": "UNAVAILABLE", "reason": "DATE_OUTSIDE_FORECAST_HORIZON"}
+    return {
+        "status": "OK" if item.get("complete") else "PARTIAL",
+        "date": date_key,
+        "total_cloud_pct": item.get("cloud_cover_mean_pct"),
+        "low_cloud_pct": item.get("cloud_cover_low_mean_pct"),
+        "precipitation_mm": item.get("precipitation_mm"),
+        "snowfall_cm": item.get("snowfall_cm"),
+        "temperature_mean_c": item.get("temperature_mean_c"),
+        "temperature_min_c": item.get("temperature_min_c"),
+        "temperature_max_c": item.get("temperature_max_c"),
+        "gust_max_kmh": item.get("wind_gust_max_kmh"),
+        "wind_speed_mean_kmh": item.get("wind_speed_mean_kmh"),
+        "sunshine_or_shortwave": item.get("solar_metric"),
+    }
+
+
+def _ensemble_window_view(record: dict | None, target_date: dt.date, window: str, cutoff_date: dt.date) -> dict:
+    if not record or record.get("status") != "PASS":
+        return {"status": "UNAVAILABLE", "reason": "ECMWF_ENSEMBLE_UNAVAILABLE"}
+    hourly = record.get("hourly") or {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    indices = _gefs_window_indices(times, target_date, window, cutoff_date)
+    if not indices:
+        return {"status": "UNAVAILABLE", "reason": "OUTSIDE_ECMWF_ENSEMBLE_HORIZON"}
+    valid, check = _gefs_member_check({"time": times, **hourly})
+    suffixes = check.get("member_suffixes", []) if valid else []
+    values = []
+    for suffix in suffixes:
+        item = _gefs_member_aggregate(hourly, suffix, indices)
+        if item:
+            values.append(item)
+    if not values:
+        return {"status": "UNAVAILABLE", "reason": "ECMWF_ENSEMBLE_WINDOW_MISSING"}
+    result = _gefs_distribution_summary(values, len(suffixes))
+    return {
+        "status": "OK" if check.get("status") == "PASS" else "PARTIAL",
+        "window": window,
+        "date": target_date.isoformat(),
+        "members_valid": len(suffixes),
+        "statistics": result,
+    }
+
+
+def _gefs_segment_for_date(point_record: dict | None, target_date: dt.date) -> tuple[str | None, dict | None]:
+    if not point_record:
+        return None, None
+    for segment_key in ("near_range", "long_range"):
+        segment = point_record.get(segment_key) or {}
+        if any(day.get("date") == target_date.isoformat() for day in segment.get("daily", [])):
+            return segment_key, segment
+    return None, None
+
+
+def _gefs_window_view(point_record: dict | None, target_date: dt.date, window: str) -> dict:
+    segment_key, segment = _gefs_segment_for_date(point_record, target_date)
+    if not segment:
+        return {"status": "UNAVAILABLE", "reason": "GEFS_DATE_OUTSIDE_FORECAST_HORIZON"}
+    result = copy.deepcopy((segment.get("windows") or {}).get(target_date.isoformat(), {}).get(window) or {})
+    if not result:
+        return {"status": "UNAVAILABLE", "reason": "GEFS_WINDOW_UNAVAILABLE"}
+    result["segment"] = segment_key
+    result["model_id"] = segment.get("model_id")
+    result["resolution"] = segment.get("resolution")
+    return result
+
+
+def _distribution_classification(value: float | None, stats: dict | None) -> str:
+    if value is None or not stats or stats.get("p10") is None:
+        return "UNAVAILABLE"
+    if stats.get("p25") is not None and stats.get("p75") is not None and stats["p25"] <= value <= stats["p75"]:
+        return "INSIDE_IQR"
+    if stats.get("p10") <= value <= stats.get("p90"):
+        return "INSIDE_P10_P90"
+    return "OUTLIER"
+
+
+def _event_support_from_gefs_window(gefs_window: dict, event_type: str) -> float | None:
+    statistics = gefs_window.get("statistics") or {}
+    probabilities = statistics.get("probabilities") or {}
+    mapping = {
+        "CLOUD_EVENT": "cloud_cover_gt_70pct",
+        "PRECIP_EVENT": "precipitation_gt_0_5mm",
+        "SNOW_EVENT": "snowfall_gt_0_5cm",
+    }
+    item = probabilities.get(mapping.get(event_type, ""))
+    return item.get("probability") if isinstance(item, dict) else None
+
+
+def _deterministic_support(
+    deterministic: dict,
+    gefs_window: dict,
+    event_type: str,
+) -> str:
+    if deterministic.get("status") != "OK" or gefs_window.get("status") not in {"OK", "PARTIAL"}:
+        return "UNAVAILABLE"
+    if event_type == "CLOUD_EVENT":
+        active = (deterministic.get("total_cloud_pct") or 0) >= GEFS_PHASE_THRESHOLDS["cloud_cover_pct"] or (deterministic.get("low_cloud_pct") or 0) >= GEFS_PHASE_THRESHOLDS["cloud_cover_low_pct"]
+    elif event_type == "PRECIP_EVENT":
+        active = (deterministic.get("precipitation_mm") or 0) >= GEFS_PHASE_THRESHOLDS["precipitation_mm"]
+    elif event_type == "SNOW_EVENT":
+        active = (deterministic.get("snowfall_cm") or 0) > GEFS_PHASE_THRESHOLDS["snowfall_cm"]
+    else:
+        active = False
+    support = _event_support_from_gefs_window(gefs_window, event_type)
+    if support is None:
+        return "UNAVAILABLE"
+    if active and support >= 0.6:
+        return "SUPPORTED"
+    if not active and support < 0.3:
+        return "SUPPORTED"
+    if 0.2 <= support < 0.6:
+        return "WEAK_SUPPORT"
+    return "OUTLIER"
+
+
+def _deterministic_consistency(gfs_window: dict, gefs_window: dict) -> dict:
+    if gfs_window.get("status") != "OK" or gefs_window.get("status") not in {"OK", "PARTIAL"}:
+        return {
+            "cloud_cover": "UNAVAILABLE",
+            "low_cloud": "UNAVAILABLE",
+            "temperature": "UNAVAILABLE",
+            "snowfall": "UNAVAILABLE",
+            "precipitation": "UNAVAILABLE",
+            "event_phase": "UNAVAILABLE",
+            "deterministic_outlier": False,
+        }
+    stats = gefs_window.get("statistics") or {}
+    classifications = {
+        "cloud_cover": _distribution_classification(gfs_window.get("total_cloud_pct"), (stats.get("cloud_cover") or {})),
+        "low_cloud": _distribution_classification(gfs_window.get("low_cloud_pct"), (stats.get("cloud_cover_low") or {})),
+        "temperature": _distribution_classification(gfs_window.get("temperature_mean_c"), (stats.get("temperature_2m") or {})),
+        "snowfall": _distribution_classification(gfs_window.get("snowfall_cm"), (stats.get("snowfall") or {})),
+        "precipitation": _distribution_classification(gfs_window.get("precipitation_mm"), (stats.get("precipitation") or {})),
+    }
+    supports = [_deterministic_support(gfs_window, gefs_window, event_type) for event_type in ("CLOUD_EVENT", "PRECIP_EVENT", "SNOW_EVENT")]
+    outlier = any(value == "OUTLIER" for value in classifications.values()) or any(value == "OUTLIER" for value in supports)
+    return {
+        **classifications,
+        "event_phase": "OUTLIER" if any(value == "OUTLIER" for value in supports) else "SUPPORTED" if all(value in {"SUPPORTED", "UNAVAILABLE"} for value in supports) else "WEAK_SUPPORT",
+        "deterministic_outlier": outlier,
+    }
+
+
+def _ensemble_consensus(ec_window: dict, gefs_window: dict) -> dict:
+    if ec_window.get("status") not in {"OK", "PARTIAL"} or gefs_window.get("status") not in {"OK", "PARTIAL"}:
+        return {"agreement": "LOW", "notes": ["ONE_ENSEMBLE_OUTSIDE_HORIZON_OR_UNAVAILABLE"]}
+    ec_stats = ec_window.get("statistics") or {}
+    gefs_stats = gefs_window.get("statistics") or {}
+    pairs = (
+        ("cloud_cover_gt_70pct", ec_stats.get("probabilities", {}).get("cloud_cover_gt_70pct"), gefs_stats.get("probabilities", {}).get("cloud_cover_gt_70pct")),
+        ("precipitation_gt_0_5mm", ec_stats.get("probabilities", {}).get("precipitation_gt_0_5mm"), gefs_stats.get("probabilities", {}).get("precipitation_gt_0_5mm")),
+        ("snowfall_gt_0_5cm", ec_stats.get("probabilities", {}).get("snowfall_gt_0_5cm"), gefs_stats.get("probabilities", {}).get("snowfall_gt_0_5cm")),
+    )
+    deltas = []
+    notes = []
+    for name, ec_item, gefs_item in pairs:
+        if isinstance(ec_item, dict) and isinstance(gefs_item, dict) and ec_item.get("probability") is not None and gefs_item.get("probability") is not None:
+            delta = abs(ec_item["probability"] - gefs_item["probability"])
+            deltas.append(delta)
+            if delta > 0.4:
+                notes.append(f"{name}:LARGE_PROBABILITY_DIFFERENCE")
+    if not deltas:
+        return {"agreement": "LOW", "notes": ["NO_SHARED_PROBABILITY_FIELDS"]}
+    maximum = max(deltas)
+    agreement = "HIGH" if maximum <= 0.2 else "MEDIUM" if maximum <= 0.4 else "LOW"
+    return {"agreement": agreement, "notes": notes, "max_probability_difference": round(maximum, 3)}
+
+
+def _viewing_signal(gefs_window: dict, ec_window: dict, consistency: dict) -> dict:
+    if gefs_window.get("status") not in {"OK", "PARTIAL"}:
+        return {
+            "cloud_signal": "UNCERTAIN",
+            "low_cloud_signal": "UNCERTAIN",
+            "precip_signal": "UNCERTAIN",
+            "snow_signal": "UNCERTAIN",
+            "wind_signal": "UNCERTAIN",
+            "model_agreement": "LOW",
+        }
+    stats = gefs_window.get("statistics") or {}
+    probabilities = stats.get("probabilities") or {}
+    cloud = probabilities.get("cloud_cover_gt_70pct", {}).get("probability")
+    low = probabilities.get("cloud_cover_low_gt_50pct", {}).get("probability")
+    precip = probabilities.get("precipitation_gt_0_5mm", {}).get("probability")
+    snow = probabilities.get("snowfall_gt_0_5cm", {}).get("probability")
+    gust = probabilities.get("gust_gt_50kmh", {}).get("probability")
+    median_cloud = (stats.get("cloud_cover") or {}).get("median")
+    cloud_signal = "UNCERTAIN" if cloud is None else "CLOUDY" if cloud >= 0.65 or (median_cloud is not None and median_cloud >= 70) else "CLEAR" if cloud <= 0.25 and (median_cloud is None or median_cloud < 35) else "MIXED"
+    low_signal = "UNCERTAIN" if low is None else "HIGH" if low >= 0.5 else "MODERATE" if low >= 0.2 else "LOW"
+    precip_signal = "UNCERTAIN" if precip is None else "HIGH" if precip >= 0.6 else "MODERATE" if precip >= 0.3 else "LOW"
+    snow_signal = "UNCERTAIN" if snow is None else "HIGH" if snow >= 0.5 else "MODERATE" if snow >= 0.2 else "LOW"
+    wind_signal = "UNCERTAIN" if gust is None else "HIGH" if gust >= 0.5 else "MODERATE" if gust >= 0.25 else "LOW"
+    agreement = "LOW" if consistency.get("deterministic_outlier") else "MEDIUM" if ec_window.get("status") not in {"OK", "PARTIAL"} else "HIGH"
+    return {
+        "cloud_signal": cloud_signal,
+        "low_cloud_signal": low_signal,
+        "precip_signal": precip_signal,
+        "snow_signal": snow_signal,
+        "wind_signal": wind_signal,
+        "model_agreement": agreement,
+    }
+
+
+def _golden_forecast_granularity(forecast_date: dt.date, target_date: dt.date) -> str:
+    lead = (target_date - forecast_date).days
+    if lead <= 7:
+        return "hourly_window_supported"
+    if lead <= 14:
+        return "day_window_only"
+    return "trend_only"
+
+
+def _gefs_phase_for_date(point_record: dict | None, target_date: dt.date, event_type: str) -> dict | None:
+    segment_key, segment = _gefs_segment_for_date(point_record, target_date)
+    if not segment:
+        return None
+    phase = copy.deepcopy((segment.get("event_phases") or {}).get(event_type))
+    if not phase:
+        return None
+    phase["segment"] = segment_key
+    distribution = phase.get("event_day_distribution") or {}
+    phase["relevant_to_date"] = target_date.isoformat() in distribution
+    return phase
+
+
+def _golden_location(
+    config: dict,
+    point_id: str,
+    target_date: dt.date,
+    forecast_date: dt.date,
+    hres: dict,
+    gfs: dict,
+    ensemble: dict,
+    gefs: dict,
+    cutoff_date: dt.date,
+) -> dict:
+    point = active_points(config).get(point_id)
+    name = point.get("name") if point else point_id
+    hres_record = (hres.get("points") or {}).get(point_id)
+    gfs_record = (gfs.get("points") or {}).get(point_id)
+    ec_record = (ensemble.get("points") or {}).get(point_id)
+    gefs_record = (gefs.get("points") or {}).get(point_id)
+    hres_daily = _deterministic_daily_summary(hres_record, target_date, cutoff_date)
+    gfs_daily = _deterministic_daily_summary(gfs_record, target_date, cutoff_date)
+    hres_windows = {window: _deterministic_hourly_window(hres_record, target_date, window, cutoff_date) for window in ("MORNING", "AFTERNOON")}
+    gfs_windows = {window: _deterministic_hourly_window(gfs_record, target_date, window, cutoff_date) for window in ("MORNING", "AFTERNOON")}
+    ec_windows = {window: _ensemble_window_view(ec_record, target_date, window, cutoff_date) for window in ("MORNING", "AFTERNOON")}
+    gefs_windows = {window: _gefs_window_view(gefs_record, target_date, window) for window in ("MORNING", "AFTERNOON")}
+    consistency = {
+        window: _deterministic_consistency(gfs_windows[window], gefs_windows[window])
+        for window in ("MORNING", "AFTERNOON")
+    }
+    phases = {
+        name: _gefs_phase_for_date(gefs_record, target_date, name)
+        for name in ("CLOUD_EVENT", "PRECIP_EVENT", "SNOW_EVENT", "COLD_EVENT")
+    }
+    consensus = {
+        window: _ensemble_consensus(ec_windows[window], gefs_windows[window])
+        for window in ("MORNING", "AFTERNOON")
+    }
+    viewing = {
+        window.lower(): _viewing_signal(gefs_windows[window], ec_windows[window], consistency[window])
+        for window in ("MORNING", "AFTERNOON")
+    }
+    return {
+        "date": target_date.isoformat(),
+        "location_id": point_id,
+        "location_name": name,
+        "usable_for_main_chain": bool(point and point.get("status") == "VERIFIED"),
+        "forecast_granularity": _golden_forecast_granularity(forecast_date, target_date),
+        "ecmwf_hres": {"daily": hres_daily, **{key.lower(): value for key, value in hres_windows.items()}},
+        "gfs_deterministic": {"daily": gfs_daily, **{key.lower(): value for key, value in gfs_windows.items()}},
+        "ecmwf_ensemble": {"morning": ec_windows["MORNING"], "afternoon": ec_windows["AFTERNOON"]},
+        "gefs": {
+            "morning": gefs_windows["MORNING"],
+            "afternoon": gefs_windows["AFTERNOON"],
+            "members_total": gefs.get("members_total"),
+            "members_valid": {
+                "morning": gefs_windows["MORNING"].get("members_valid"),
+                "afternoon": gefs_windows["AFTERNOON"].get("members_valid"),
+            },
+        },
+        "weather_event_phase": {
+            "cloud_event_window": phases["CLOUD_EVENT"],
+            "precip_event_window": phases["PRECIP_EVENT"],
+            "snow_event_window": phases["SNOW_EVENT"],
+            "cold_event_window": phases["COLD_EVENT"],
+            "phase_confidence": {
+                key.lower(): (value or {}).get("phase_confidence")
+                for key, value in phases.items()
+            },
+            "phase_spread_hours": {
+                key.lower(): (value or {}).get("phase_spread_hours")
+                for key, value in phases.items()
+            },
+            "multimodal": {
+                key.lower(): bool((value or {}).get("multimodal"))
+                for key, value in phases.items()
+            },
+        },
+        "deterministic_support": {
+            "gfs_vs_gefs": consistency,
+        },
+        "ensemble_consensus": consensus,
+        "viewing_conditions": viewing,
+    }
+
+
+def build_golden_week_brief(
+    config: dict,
+    forecast_date: dt.date,
+    hres: dict,
+    gfs: dict,
+    ensemble: dict,
+    gefs: dict,
+    cutoff_date: dt.date = GEFS_TRAVEL_CUTOFF_DATE,
+) -> dict:
+    itinerary = {
+        "2026-10-01": {"locations": ["B1"], "priority_windows": ["MORNING", "AFTERNOON"]},
+        "2026-10-02": {"locations": ["K1", "K2", "K3"], "priority_windows": ["MORNING", "AFTERNOON"]},
+        "2026-10-03": {"locations": ["K1", "K2", "K3"], "priority_windows": ["MORNING"]},
+        "2026-10-04": {"locations": ["H1", "H2", "H3", "H4"], "priority_windows": ["MORNING", "AFTERNOON"]},
+        "2026-10-05": {"locations": ["H1", "H2", "H3", "H4"], "priority_windows": ["MORNING"]},
+        "2026-10-06": {"locations": ["C1"], "priority_windows": ["MORNING", "AFTERNOON"]},
+    }
+    active = active_points(config)
+    dates = [dt.date(2026, 10, day) for day in range(1, 7)]
+    locations = {}
+    records = []
+    for target_date in dates:
+        locations[target_date.isoformat()] = {}
+        for point_id, point in active.items():
+            item = _golden_location(config, point_id, target_date, forecast_date, hres, gfs, ensemble, gefs, cutoff_date)
+            locations[target_date.isoformat()][point_id] = item
+            records.append(item)
+
+    def dates_for(predicate) -> list[str]:
+        found = []
+        for target_date in dates:
+            day_items = locations[target_date.isoformat()].values()
+            if any(predicate(item) for item in day_items):
+                found.append(target_date.isoformat())
+        return found
+
+    clearest_ec = sorted(
+        dates,
+        key=lambda value: mean([
+            item["ecmwf_hres"]["daily"].get("total_cloud_pct")
+            for item in locations[value.isoformat()].values()
+            if item["ecmwf_hres"]["daily"].get("total_cloud_pct") is not None
+        ]) if any(item["ecmwf_hres"]["daily"].get("total_cloud_pct") is not None for item in locations[value.isoformat()].values()) else 999,
+    )[:3]
+    clearest_gfs = sorted(
+        dates,
+        key=lambda value: mean([
+            item["gfs_deterministic"]["daily"].get("total_cloud_pct")
+            for item in locations[value.isoformat()].values()
+            if item["gfs_deterministic"]["daily"].get("total_cloud_pct") is not None
+        ]) if any(item["gfs_deterministic"]["daily"].get("total_cloud_pct") is not None for item in locations[value.isoformat()].values()) else 999,
+    )[:3]
+    return {
+        "status": "OK",
+        "forecast_date": forecast_date.isoformat(),
+        "cutoff_date": cutoff_date.isoformat(),
+        "dates": [value.isoformat() for value in dates],
+        "locations": locations,
+        "itinerary_focus": itinerary,
+        "holiday_overview": {
+            "main_weather_window": {"start_date": dates[0].isoformat(), "end_date": dates[-1].isoformat(), "granularity": "date_and_observation_window"},
+            "cold_air_window": dates_for(lambda item: (item["weather_event_phase"].get("cold_event_window") or {}).get("relevant_to_date") is True),
+            "precip_window": dates_for(lambda item: (item["weather_event_phase"].get("precip_event_window") or {}).get("relevant_to_date") is True),
+            "snow_window": dates_for(lambda item: (item["weather_event_phase"].get("snow_event_window") or {}).get("relevant_to_date") is True),
+            "clearest_days_ec": [value.isoformat() for value in clearest_ec],
+            "clearest_days_gfs": [value.isoformat() for value in clearest_gfs],
+            "ensemble_best_supported_clear_windows": dates_for(lambda item: any(view.get("cloud_signal") == "CLEAR" and view.get("model_agreement") in {"HIGH", "MEDIUM"} for view in item.get("viewing_conditions", {}).values())),
+            "highest_low_cloud_risk_windows": dates_for(lambda item: any(view.get("low_cloud_signal") == "HIGH" for view in item.get("viewing_conditions", {}).values())),
+            "highest_wind_risk_windows": dates_for(lambda item: any(view.get("wind_signal") == "HIGH" for view in item.get("viewing_conditions", {}).values())),
+            "highest_snow_risk_windows": dates_for(lambda item: any(view.get("snow_signal") == "HIGH" for view in item.get("viewing_conditions", {}).values())),
+            "largest_model_disagreement_dates": dates_for(lambda item: any(view.get("model_agreement") == "LOW" for view in item.get("viewing_conditions", {}).values())),
+        },
+        "verified_location_ids": sorted(active),
+        "excluded_points": excluded_points(config),
+        "interpretation_boundary": "Machine-readable weather and model-consistency summary for 2026-10-01 through 2026-10-06; no phenology or travel conclusion.",
+    }
+
+
 def build_phenology_weather_summary(
     config: dict,
     generated_at: str,
@@ -7151,6 +8514,7 @@ def build_summary(
     spatial: dict,
     long_range: dict | None = None,
     weather_events: dict | None = None,
+    gefs: dict | None = None,
 ) -> dict:
     active = active_points(config)
     history_regions = (history.get("region_summaries") or {}).get("regions", {})
@@ -7219,6 +8583,23 @@ def build_summary(
         }
         if weather_events is not None:
             regions[region_id]["weather_events"] = weather_event_light_summary(weather_events, region_id)
+    golden_week_brief = (
+        build_golden_week_brief(
+            config,
+            now_local.date(),
+            hres,
+            gfs,
+            ensemble,
+            gefs,
+            GEFS_TRAVEL_CUTOFF_DATE,
+        )
+        if gefs is not None
+        else {
+            "status": "UNAVAILABLE",
+            "reason": "GEFS_MODULE_UNAVAILABLE",
+            "cutoff_date": GEFS_TRAVEL_CUTOFF_DATE.isoformat(),
+        }
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at,
@@ -7232,6 +8613,8 @@ def build_summary(
         },
         "phenology_weather_summary_path": "data/latest/phenology_weather_summary.json",
         "weather_events_path": "data/latest/weather_events.json",
+        "gefs_path": "data/latest/gefs.json",
+        "golden_week_brief": golden_week_brief,
         "regions": regions,
         "manual_phenology_baseline": config.get("manual_phenology_baseline"),
         "interpretation_boundary": "This file reports weather drivers and weather event risk. It does not produce a final autumn-colour or phenology conclusion.",
@@ -7650,6 +9033,9 @@ def compact_module(name: str, value: dict) -> dict:
         compact.pop("raw_points", None)
         compact.pop("raw_references", None)
         compact["raw_hourly_included"] = False
+    elif name == "gefs":
+        compact.pop("raw_points", None)
+        compact["raw_hourly_included"] = False
     elif name == "weather_events":
         compact["raw_hourly_included"] = False
     return compact
@@ -7660,6 +9046,15 @@ def public_long_range_artifact(value: dict) -> dict:
     public = copy.deepcopy(value)
     public.pop("raw_points", None)
     public.pop("raw_references", None)
+    public["raw_hourly_included"] = False
+    public["raw_snapshot_retention_days"] = RAW_RETENTION_DAYS
+    return public
+
+
+def public_gefs_artifact(value: dict) -> dict:
+    """Keep member distributions/phases while omitting full member hourly arrays."""
+    public = copy.deepcopy(value)
+    public.pop("raw_points", None)
     public["raw_hourly_included"] = False
     public["raw_snapshot_retention_days"] = RAW_RETENTION_DAYS
     return public
@@ -7699,10 +9094,12 @@ def write_outputs(
     grid_registry: dict | None = None,
     phenology_weather_summary: dict | None = None,
     weather_events: dict | None = None,
+    gefs: dict | None = None,
 ) -> None:
     grid_registry = grid_registry or {}
     phenology_weather_summary = phenology_weather_summary or {}
     weather_events = weather_events or {}
+    gefs = gefs or {}
     artifacts = {
         "status.json": status,
         "hres.json": hres,
@@ -7716,6 +9113,7 @@ def write_outputs(
         "grid_registry.json": grid_registry,
         "phenology_weather_summary.json": phenology_weather_summary,
         "weather_events.json": weather_events,
+        "gefs.json": public_gefs_artifact(gefs),
         "summary.json": summary,
     }
     for filename, artifact in artifacts.items():
@@ -7739,6 +9137,7 @@ def write_outputs(
         "long_range.json.gz": long_range,
         "grid_registry.json.gz": grid_registry,
         "weather_events.json.gz": weather_events,
+        "gefs.json.gz": gefs,
     }
     for filename, artifact in raw_values.items():
         write_gzip_json(archive_path / "raw" / filename, artifact)
@@ -7788,6 +9187,7 @@ def build_status(
     long_range_status = modules.get("long_range", {}).get("status", "FAILED")
     light_summary_status = modules.get("phenology_weather_summary", {}).get("status")
     weather_events_status = modules.get("weather_events", {}).get("status")
+    gefs_status = modules.get("gefs", {}).get("status", "SKIPPED")
     if all(value == "OK" for value in module_values.values()):
         pipeline_status = (
             "OK"
@@ -7795,6 +9195,7 @@ def build_status(
             and history_forward_status == "OK"
             and light_summary_status in {None, "OK"}
             and weather_events_status in {None, "OK"}
+            and gefs_status in {None, "OK", "SKIPPED"}
             else "PARTIAL"
         )
     elif modules.get("hres", {}).get("status") == "OK" or modules.get("history", {}).get("status") == "OK":
@@ -7821,6 +9222,7 @@ def build_status(
             "spatial_sampling": modules.get("spatial_sampling", {}).get("status", "FAILED"),
             "long_range": long_range_status,
             "history_forward": history_forward_status,
+            "gefs": gefs_status,
         },
         "module_details": {
             name: {
@@ -7860,7 +9262,7 @@ def minimal_failure_status(generated_at: str, reason: str) -> dict:
         "generated_at": generated_at,
         "data_date": None,
         "pipeline_status": "FAILED",
-        "modules": {"hres": "FAILED", "history": "FAILED", "history_forward": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED", "phenology_weather_summary": "FAILED", "weather_events": "FAILED"},
+        "modules": {"hres": "FAILED", "history": "FAILED", "history_forward": "FAILED", "ensemble": "FAILED", "gfs": "FAILED", "single_runs": "FAILED", "spatial_sampling": "FAILED", "long_range": "FAILED", "gefs": "FAILED", "phenology_weather_summary": "FAILED", "weather_events": "FAILED"},
         "module_details": {"pipeline": {"status": "FAILED", "error": reason}},
         "points": {},
         "route_slots": {},
@@ -7985,6 +9387,18 @@ def run_pipeline(
             error,
         )
 
+    log("PHASE 8B: INDEPENDENT GEFS")
+    try:
+        modules["gefs"] = run_gefs(
+            config,
+            client,
+            generated_at,
+            data_date,
+            cutoff_date=GEFS_TRAVEL_CUTOFF_DATE,
+        )
+    except Exception as error:
+        modules["gefs"] = failed_module("gefs", generated_at, data_date, error)
+
     log("PHASE 9: SUMMARY")
     try:
         summary = build_summary(
@@ -8000,6 +9414,7 @@ def run_pipeline(
             modules["spatial_sampling"],
             modules["long_range"],
             modules["weather_events"],
+            modules["gefs"],
         )
     except Exception as error:
         log(f"[summary] BUILD FAILED: {type(error).__name__}:{error}")
@@ -8109,6 +9524,7 @@ def run_pipeline(
         grid_registry=grid_registry,
         phenology_weather_summary=phenology_weather_summary,
         weather_events=modules["weather_events"],
+        gefs=modules["gefs"],
     )
     log(f"PIPELINE STATUS: {status['pipeline_status']}")
     for name, value in status["modules"].items():

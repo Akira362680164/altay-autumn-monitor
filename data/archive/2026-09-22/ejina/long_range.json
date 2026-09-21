@@ -1,0 +1,136 @@
+{
+  "aggregation": {
+    "hourly_values_in_public_artifact": false,
+    "lead_day_range": "D16_D35",
+    "type": "fixed_3_day_blocks",
+    "windows": [
+      "D16_D18",
+      "D19_D21",
+      "D22_D24",
+      "D25_D27",
+      "D28_D30",
+      "D31_D33",
+      "D34_D35"
+    ]
+  },
+  "archive_kind": "compact_daily_snapshot",
+  "coverage": "global; Xinjiang is within the global product domain",
+  "data_date": "2026-09-21",
+  "endpoint": "https://ensemble-api.open-meteo.com/v1/ensemble",
+  "ensemble_members": 31,
+  "excluded_points": {},
+  "expected_ensemble_members": 31,
+  "failed_points": 3,
+  "forecast_horizon_days": null,
+  "forecast_horizon_status": "FAILED",
+  "forecast_last_timestamp": null,
+  "forecast_lead_days": 0,
+  "generated_at": "2026-09-21T17:43:51Z",
+  "history_cache": {
+    "api_requests": 0,
+    "cache_failed": 0,
+    "cache_fills": 0,
+    "cache_hits": 0,
+    "cache_invalid": 0,
+    "cache_misses": 0,
+    "cache_refreshes": 0,
+    "directory": "data/cache/history",
+    "enabled": true,
+    "missing_dates_requested": 0,
+    "refresh_requested": false
+  },
+  "hourly_values_omitted": true,
+  "interpretation_boundary": "16-35 day coarse weather background only; no local vegetation or travel conclusion.",
+  "model": "GFS Ensemble 0.5°",
+  "model_documentation": "https://open-meteo.com/en/docs/ensemble-api",
+  "model_id": "ncep_gefs05",
+  "model_registry_documentation": "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml",
+  "module": "long_range_background",
+  "native_resolution": "0.5° (~50 km)",
+  "native_time_resolution": "3-hourly",
+  "partial_points": 0,
+  "qa": {
+    "actual_ensemble_members": null,
+    "actual_horizon_days_including_today": null,
+    "expected_ensemble_members": 31,
+    "forecast_lead_days": 0,
+    "grid_scale_class": "coarse_ensemble",
+    "horizon_status": "FAILED",
+    "last_available_timestamp": null,
+    "region_statuses": {
+      "erdaoqiao": "FAILED",
+      "qidaoqiao": "FAILED",
+      "sidaoqiao": "FAILED"
+    }
+  },
+  "raw_hourly_included": false,
+  "raw_snapshot_retention_days": 14,
+  "regions": {
+    "erdaoqiao": {
+      "overall_16_35d": {
+        "confidence": "VERY_LOW",
+        "temperature": {
+          "direction": "UNDETERMINED"
+        }
+      },
+      "point_id": "EJ1",
+      "qa": {
+        "final_status": "INVALID",
+        "model_run_initialization": null,
+        "reason": "OPEN_METEO_REQUEST_FAILED:Daily API request limit exceeded. Please try again tomorrow.",
+        "valid": false
+      },
+      "reason": "OPEN_METEO_REQUEST_FAILED:Daily API request limit exceeded. Please try again tomorrow.",
+      "status": "FAILED",
+      "usable_for_main_chain": true,
+      "visit_date": null,
+      "windows": []
+    },
+    "qidaoqiao": {
+      "overall_16_35d": {
+        "confidence": "VERY_LOW",
+        "temperature": {
+          "direction": "UNDETERMINED"
+        }
+      },
+      "point_id": "EJ3",
+      "qa": {
+        "final_status": "INVALID",
+        "model_run_initialization": null,
+        "reason": "OPEN_METEO_REQUEST_FAILED:Daily API request limit exceeded. Please try again tomorrow.",
+        "valid": false
+      },
+      "reason": "OPEN_METEO_REQUEST_FAILED:Daily API request limit exceeded. Please try again tomorrow.",
+      "status": "FAILED",
+      "usable_for_main_chain": true,
+      "visit_date": null,
+      "windows": []
+    },
+    "sidaoqiao": {
+      "overall_16_35d": {
+        "confidence": "VERY_LOW",
+        "temperature": {
+          "direction": "UNDETERMINED"
+        }
+      },
+      "point_id": "EJ2",
+      "qa": {
+        "final_status": "INVALID",
+        "model_run_initialization": null,
+        "reason": "OPEN_METEO_REQUEST_FAILED:Daily API request limit exceeded. Please try again tomorrow.",
+        "valid": false
+      },
+      "reason": "OPEN_METEO_REQUEST_FAILED:Daily API request limit exceeded. Please try again tomorrow.",
+      "status": "FAILED",
+      "usable_for_main_chain": true,
+      "visit_date": null,
+      "windows": []
+    }
+  },
+  "requested_forecast_days": 36,
+  "schema_version": "1.3.0",
+  "source": "Open-Meteo",
+  "status": "FAILED",
+  "successful_points": 0,
+  "time_resolution_note": "Open-Meteo documents hourly interpolation for ensemble output; the GFS 0.5° product is natively 3-hourly."
+}

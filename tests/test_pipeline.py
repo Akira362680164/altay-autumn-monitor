@@ -1190,11 +1190,218 @@ class PipelineUnitTests(unittest.TestCase):
             summary_schema = json.load(handle)
         with (ROOT / "schemas" / "long_range.schema.json").open(encoding="utf-8") as handle:
             long_range_schema = json.load(handle)
-        self.assertEqual(summary_schema["properties"]["schema_version"]["const"], "1.2.0")
+        self.assertEqual(summary_schema["properties"]["schema_version"]["const"], pipeline.SCHEMA_VERSION)
         region_required = set(summary_schema["properties"]["regions"]["additionalProperties"]["required"])
         self.assertTrue({"forecast_0_7d", "forecast_8_15d", "forecast_16_35d"}.issubset(region_required))
         self.assertEqual(long_range_schema["properties"]["model_id"]["const"], "ncep_gefs05")
         self.assertEqual(long_range_schema["properties"]["expected_ensemble_members"]["const"], 31)
+        with (ROOT / "schemas" / "gefs.schema.json").open(encoding="utf-8") as handle:
+            gefs_schema = json.load(handle)
+        self.assertEqual(gefs_schema["properties"]["schema_version"]["const"], pipeline.SCHEMA_VERSION)
+        self.assertEqual(gefs_schema["properties"]["members_total"]["const"], 31)
+        self.assertEqual(gefs_schema["properties"]["near_range_model_id"]["const"], "ncep_gefs025")
+        self.assertEqual(gefs_schema["properties"]["long_range_model_id"]["const"], "ncep_gefs05")
+
+    def make_gefs_hourly(self, days=6, step_hours=3):
+        start = datetime(2026, 9, 28)
+        times = []
+        for offset in range(0, days * 24, step_hours):
+            times.append((start + timedelta(hours=offset)).strftime("%Y-%m-%dT%H:%M"))
+        hourly = {"time": times}
+        for variable in pipeline.GEFS_CORE_VARIABLES:
+            base_values = []
+            for index, _ in enumerate(times):
+                day = index * step_hours // 24
+                hour = (index * step_hours) % 24
+                if variable == "temperature_2m":
+                    value = 8 - (4 if day == 3 else 0) + (hour - 12) * 0.05
+                elif variable == "precipitation":
+                    value = 1.2 if day == 2 else 0.0
+                elif variable == "snowfall":
+                    value = 0.8 if day == 3 else 0.0
+                elif variable == "cloud_cover":
+                    value = 90.0 if day in (1, 2) else 10.0
+                elif variable == "cloud_cover_low":
+                    value = 70.0 if day == 2 else 5.0
+                elif variable == "wind_gusts_10m":
+                    value = 55.0 if day == 2 else 20.0
+                elif variable == "wind_speed_10m":
+                    value = 15.0
+                else:
+                    value = 60.0
+                base_values.append(value)
+            hourly[variable] = base_values
+            for member in range(1, pipeline.GEFS_ENSEMBLE_MEMBERS):
+                suffix = f"_member{member:02d}"
+                hourly[f"{variable}{suffix}"] = [value + member * 0.01 for value in base_values]
+        return hourly
+
+    def test_gefs_model_member_and_distribution_contract(self):
+        self.assertEqual(pipeline.GEFS_NEAR_MODEL_ID, "ncep_gefs025")
+        self.assertEqual(pipeline.GEFS_LONG_MODEL_ID, "ncep_gefs05")
+        self.assertEqual(pipeline.GEFS_ENSEMBLE_MEMBERS, 31)
+        hourly = self.make_gefs_hourly()
+        valid, check = pipeline._gefs_member_check(hourly)
+        self.assertTrue(valid)
+        self.assertEqual(check["members_valid"], 31)
+        summary = pipeline._gefs_distribution_summary(
+            [{"temperature_mean_c": float(value), "temperature_min_c": float(value), "temperature_max_c": float(value), "precipitation_mm": 0.0, "snowfall_cm": 0.0, "cloud_cover_pct": 20.0, "cloud_cover_low_pct": 5.0, "wind_speed_kmh": 5.0, "wind_gust_kmh": 10.0} for value in range(31)],
+            31,
+        )
+        self.assertEqual(summary["probabilities"]["gust_gt_50kmh"]["members_valid"], 31)
+        self.assertLessEqual(summary["temperature_2m"]["p10"], summary["temperature_2m"]["p90"])
+
+    def test_gefs_partial_member_uses_members_valid_denominator(self):
+        hourly = self.make_gefs_hourly()
+        for variable in pipeline.GEFS_CORE_VARIABLES:
+            hourly.pop(f"{variable}_member30")
+        valid, check = pipeline._gefs_member_check(hourly)
+        self.assertTrue(valid)
+        self.assertEqual(check["status"], "PARTIAL")
+        self.assertEqual(check["members_valid"], 30)
+        probability = pipeline._gefs_probability([1.0] * 15, lambda value: value > 0.5, 30)
+        self.assertEqual(probability["members_valid"], 30)
+        self.assertEqual(probability["probability"], 0.5)
+        unavailable = pipeline._gefs_probability([], lambda value: value > 0.5, 30)
+        self.assertIsNone(unavailable["probability"])
+
+    def test_gefs_event_phase_concentrated_distribution(self):
+        hourly = self.make_gefs_hourly()
+        segment = pipeline._build_gefs_segment(
+            {"hourly": hourly, "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800}},
+            "long_range", "ncep_gefs05", "GFS Ensemble 0.5°", "0.5° (~50 km)", date(2026, 10, 6),
+        )
+        cloud_phase = segment["event_phases"]["CLOUD_EVENT"]
+        self.assertEqual(cloud_phase["status"], "SIGNAL")
+        self.assertEqual(cloud_phase["members_with_event"], 31)
+        self.assertIn("2026-09-29", cloud_phase["event_day_distribution"])
+        self.assertIn(cloud_phase["phase_confidence"], {"HIGH", "MEDIUM", "LOW"})
+
+    def test_gefs_event_phase_multimodal_and_no_signal(self):
+        local = pipeline.LOCAL_TZ
+        events = [
+            {"event_start": datetime(2026, 10, 2, 0, tzinfo=local), "event_peak": datetime(2026, 10, 2, 6, tzinfo=local), "event_end": datetime(2026, 10, 2, 12, tzinfo=local)},
+            {"event_start": datetime(2026, 10, 4, 0, tzinfo=local), "event_peak": datetime(2026, 10, 4, 6, tzinfo=local), "event_end": datetime(2026, 10, 4, 12, tzinfo=local)},
+        ]
+        phase = pipeline._gefs_event_phase("CLOUD_EVENT", events, 2)
+        self.assertTrue(phase["multimodal"])
+        self.assertEqual(phase["phase_confidence"], "LOW")
+        no_signal = pipeline._gefs_event_phase("SNOW_EVENT", [], 31)
+        self.assertEqual(no_signal["status"], "NO_SIGNAL")
+        self.assertEqual(no_signal["event_day_distribution"]["none"]["members"], 31)
+
+    def test_gefs_cutoff_and_window_boundaries(self):
+        times = ["2026-10-06T18:00", "2026-10-07T00:00", "2026-10-07T06:00"]
+        self.assertEqual(
+            pipeline._gefs_window_indices(times, date(2026, 10, 6), "NIGHT", date(2026, 10, 6)),
+            [0],
+        )
+        self.assertNotIn("2026-10-07", [date.fromisoformat(key) for key in pipeline._gefs_time_groups(times, date(2026, 10, 6))])
+
+    def test_gefs_cache_round_trip_and_stale_identity(self):
+        point = {"id": "B1", **pipeline.load_config()["points"]["B1"]}
+        record = {"response": {"retrieval_time": "2026-09-22T00:00:00Z"}, "hourly": {"time": []}}
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            pipeline._write_gefs_cache(point, "ncep_gefs05", pipeline.GEFS_CORE_VARIABLES, record, cache_dir)
+            self.assertIsNotNone(pipeline._load_gefs_cache(point, "ncep_gefs05", pipeline.GEFS_CORE_VARIABLES, cache_dir))
+            changed_point = copy.deepcopy(point)
+            changed_point["latitude"] += 0.01
+            self.assertIsNone(pipeline._load_gefs_cache(changed_point, "ncep_gefs05", pipeline.GEFS_CORE_VARIABLES, cache_dir))
+
+    def test_gefs_optional_capability_probe_is_once_per_model_per_run(self):
+        point = {"id": "B1", **pipeline.load_config()["points"]["B1"]}
+        record = {
+            "status": "PASS",
+            "response": {"retrieval_time": "2026-09-22T00:00:00Z"},
+            "hourly": self.make_gefs_hourly(),
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            pipeline, "fetch_point", return_value=copy.deepcopy(record)
+        ), patch.object(pipeline, "_fetch_gefs_optional_solar") as probe:
+            capabilities = {}
+            for _ in range(2):
+                pipeline._fetch_gefs_segment(
+                    pipeline.load_config(),
+                    point,
+                    object(),
+                    "long_range",
+                    "ncep_gefs05",
+                    "GFS Ensemble 0.5°",
+                    "0.5° (~50 km)",
+                    35,
+                    "2026-09-22T00:00:00Z",
+                    date(2026, 10, 6),
+                    cache_dir=Path(directory),
+                    solar_capabilities=capabilities,
+                )
+            self.assertEqual(probe.call_count, 1)
+            self.assertFalse(capabilities["ncep_gefs05"])
+
+    def test_gefs_deterministic_outlier_and_ensemble_consensus(self):
+        gefs_window = {
+            "status": "OK",
+            "statistics": {
+                "cloud_cover": {"p10": 0, "p25": 10, "p75": 20, "p90": 40},
+                "cloud_cover_low": {"p10": 0, "p25": 10, "p75": 20, "p90": 40},
+                "temperature_2m": {"p10": 0, "p25": 2, "p75": 4, "p90": 6},
+                "precipitation": {"p10": 0, "p25": 0, "p75": 1, "p90": 3},
+                "snowfall": {"p10": 0, "p25": 0, "p75": 1, "p90": 3},
+                "probabilities": {
+                    "cloud_cover_gt_70pct": {"probability": 0.1},
+                    "precipitation_gt_0_5mm": {"probability": 0.1},
+                    "snowfall_gt_0_5cm": {"probability": 0.1},
+                },
+            },
+        }
+        gfs_window = {
+            "status": "OK",
+            "total_cloud_pct": 100,
+            "low_cloud_pct": 80,
+            "temperature_mean_c": 30,
+            "precipitation_mm": 0,
+            "snowfall_cm": 0,
+        }
+        consistency = pipeline._deterministic_consistency(gfs_window, gefs_window)
+        self.assertTrue(consistency["deterministic_outlier"])
+        self.assertEqual(consistency["cloud_cover"], "OUTLIER")
+        ec = copy.deepcopy(gefs_window)
+        ec["statistics"]["probabilities"]["cloud_cover_gt_70pct"]["probability"] = 0.1
+        self.assertEqual(pipeline._ensemble_consensus(ec, gefs_window)["agreement"], "HIGH")
+        gefs_window["statistics"]["probabilities"]["cloud_cover_gt_70pct"]["probability"] = 0.9
+        self.assertEqual(pipeline._ensemble_consensus(ec, gefs_window)["agreement"], "LOW")
+
+    def test_gefs_night_window_and_route_points_stay_out_of_brief(self):
+        times = ["2026-10-05T18:00", "2026-10-06T07:00", "2026-10-06T18:00", "2026-10-07T07:00"]
+        self.assertEqual(pipeline._gefs_window_indices(times, date(2026, 10, 5), "NIGHT", date(2026, 10, 6)), [0, 1])
+        self.assertEqual(pipeline._gefs_window_indices(times, date(2026, 10, 6), "NIGHT", date(2026, 10, 6)), [2])
+        brief = pipeline.build_golden_week_brief(pipeline.load_config(), date(2026, 9, 22), {"points": {}}, {"points": {}}, {"points": {}}, {"points": {}})
+        self.assertNotIn("AHE_ROAD_G681", brief["verified_location_ids"])
+        self.assertNotIn("G331", brief["verified_location_ids"])
+        location_text = json.dumps(brief["locations"], ensure_ascii=False)
+        self.assertNotIn("AHE_ROAD_G681", location_text)
+        self.assertNotIn("G331", location_text)
+        self.assertNotIn("2026-10-07", location_text)
+
+    def test_gefs_failure_keeps_existing_pipeline_partial(self):
+        config = pipeline.load_config()
+        modules = {name: {"status": "OK"} for name in ("hres", "history", "ensemble", "gfs", "single_runs", "spatial_sampling", "long_range", "history_forward", "weather_events")}
+        modules["gefs"] = {"status": "FAILED"}
+        status = pipeline.build_status(config, "2026-09-22T00:00:00Z", "2026-09-21", modules)
+        self.assertEqual(status["pipeline_status"], "PARTIAL")
+        self.assertEqual(status["modules"]["gefs"], "FAILED")
+        self.assertEqual(status["modules"]["hres"], "OK")
+
+    def test_golden_week_brief_is_verified_only_and_cut_off(self):
+        config = pipeline.load_config()
+        empty = {"points": {}}
+        gefs = {"members_total": 31, "points": {}}
+        brief = pipeline.build_golden_week_brief(config, date(2026, 9, 22), empty, empty, empty, gefs)
+        self.assertEqual(brief["dates"], [f"2026-10-{day:02d}" for day in range(1, 7)])
+        self.assertNotIn("2026-10-07", json.dumps(brief))
+        for items in brief["locations"].values():
+            self.assertTrue(all(item["usable_for_main_chain"] for item in items.values()))
+        self.assertEqual(brief["itinerary_focus"]["2026-10-02"]["locations"], ["K1", "K2", "K3"])
 
     def test_weather_event_flags_window_metrics_and_mechanical_stress(self):
         day = self.make_day("2026-09-01", -6)
