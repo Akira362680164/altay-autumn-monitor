@@ -1251,6 +1251,80 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(summary["probabilities"]["gust_gt_50kmh"]["members_valid"], 31)
         self.assertLessEqual(summary["temperature_2m"]["p10"], summary["temperature_2m"]["p90"])
 
+    def test_gefs_optional_missing_does_not_invalidate_core_segment(self):
+        hourly = self.make_gefs_hourly()
+        for variable in ("cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            for key in list(hourly):
+                if key == variable or key.startswith(f"{variable}_member"):
+                    hourly.pop(key)
+        valid, check = pipeline._gefs_member_check(hourly)
+        self.assertTrue(valid)
+        self.assertEqual(check["status"], "PASS")
+        self.assertEqual(check["required_missing_variables"], [])
+        self.assertEqual(
+            set(check["optional_missing_variables"]),
+            {"cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"},
+        )
+        segment = pipeline._build_gefs_segment(
+            {"hourly": hourly, "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800}},
+            "long_range", "ncep_gefs05", "GFS Ensemble 0.5°", "0.5° (~50 km)", date(2026, 10, 6),
+        )
+        self.assertEqual(segment["status"], "OK")
+
+    def test_gefs_required_missing_is_partial_and_all_core_missing_is_failed(self):
+        hourly = self.make_gefs_hourly()
+        for key in list(hourly):
+            if key == "precipitation" or key.startswith("precipitation_member"):
+                hourly.pop(key)
+        valid, check = pipeline._gefs_member_check(hourly)
+        self.assertTrue(valid)
+        self.assertEqual(check["status"], "PARTIAL")
+        self.assertEqual(check["required_missing_variables"], ["precipitation"])
+        segment = pipeline._build_gefs_segment(
+            {"hourly": hourly, "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800}},
+            "long_range", "ncep_gefs05", "GFS Ensemble 0.5°", "0.5° (~50 km)", date(2026, 10, 6),
+        )
+        self.assertEqual(segment["status"], "PARTIAL")
+        all_core_missing = self.make_gefs_hourly()
+        for variable in pipeline.GEFS_CORE_VARIABLES:
+            for key in list(all_core_missing):
+                if key == variable or key.startswith(f"{variable}_member"):
+                    all_core_missing.pop(key)
+        valid, check = pipeline._gefs_member_check(all_core_missing)
+        self.assertFalse(valid)
+        self.assertEqual(check["status"], "FAIL")
+        failed_segment = pipeline._build_gefs_segment(
+            {"hourly": all_core_missing, "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800}},
+            "long_range", "ncep_gefs05", "GFS Ensemble 0.5°", "0.5° (~50 km)", date(2026, 10, 6),
+        )
+        self.assertEqual(failed_segment["status"], "FAILED")
+
+    def test_gefs_point_status_counts_distinguish_ok_partial_failed_and_usable(self):
+        config = pipeline.load_config()
+        hourly = self.make_gefs_hourly()
+
+        def fake_fetch(*args, **kwargs):
+            return {
+                "status": "PASS",
+                "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800},
+                "hourly": copy.deepcopy(hourly),
+                "gefs_missing_variables": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(pipeline, "_fetch_gefs_segment", side_effect=fake_fetch):
+            result = pipeline.run_gefs(
+                config,
+                object(),
+                "2026-09-22T00:00:00Z",
+                "2026-09-21",
+                cache_dir=Path(directory),
+            )
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["successful_points"], len(pipeline.active_points(config)))
+        self.assertEqual(result["partial_points"], 0)
+        self.assertEqual(result["failed_points"], 0)
+        self.assertEqual(result["usable_points"], len(pipeline.active_points(config)))
+
     def test_gefs_partial_member_uses_members_valid_denominator(self):
         hourly = self.make_gefs_hourly()
         for variable in pipeline.GEFS_CORE_VARIABLES:
@@ -1370,6 +1444,18 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(pipeline._ensemble_consensus(ec, gefs_window)["agreement"], "HIGH")
         gefs_window["statistics"]["probabilities"]["cloud_cover_gt_70pct"]["probability"] = 0.9
         self.assertEqual(pipeline._ensemble_consensus(ec, gefs_window)["agreement"], "LOW")
+        self.assertEqual(
+            pipeline._ensemble_consensus({"status": "UNAVAILABLE"}, ec)["agreement"],
+            "ONE_ENSEMBLE_ONLY",
+        )
+        self.assertEqual(
+            pipeline._ensemble_consensus({"status": "UNAVAILABLE"}, {"status": "UNAVAILABLE"})["agreement"],
+            "UNAVAILABLE",
+        )
+        self.assertEqual(
+            pipeline._viewing_signal(ec, {"status": "UNAVAILABLE"}, {}, "ONE_ENSEMBLE_ONLY")["model_agreement"],
+            "SINGLE_ENSEMBLE",
+        )
 
     def test_gefs_night_window_and_route_points_stay_out_of_brief(self):
         times = ["2026-10-05T18:00", "2026-10-06T07:00", "2026-10-06T18:00", "2026-10-07T07:00"]
@@ -1378,7 +1464,7 @@ class PipelineUnitTests(unittest.TestCase):
         brief = pipeline.build_golden_week_brief(pipeline.load_config(), date(2026, 9, 22), {"points": {}}, {"points": {}}, {"points": {}}, {"points": {}})
         self.assertNotIn("AHE_ROAD_G681", brief["verified_location_ids"])
         self.assertNotIn("G331", brief["verified_location_ids"])
-        location_text = json.dumps(brief["locations"], ensure_ascii=False)
+        location_text = json.dumps(brief["days"], ensure_ascii=False)
         self.assertNotIn("AHE_ROAD_G681", location_text)
         self.assertNotIn("G331", location_text)
         self.assertNotIn("2026-10-07", location_text)
@@ -1399,9 +1485,72 @@ class PipelineUnitTests(unittest.TestCase):
         brief = pipeline.build_golden_week_brief(config, date(2026, 9, 22), empty, empty, empty, gefs)
         self.assertEqual(brief["dates"], [f"2026-10-{day:02d}" for day in range(1, 7)])
         self.assertNotIn("2026-10-07", json.dumps(brief))
-        for items in brief["locations"].values():
+        self.assertIn("days", brief)
+        self.assertNotIn("locations", brief)
+        for items in brief["days"].values():
             self.assertTrue(all(item["usable_for_main_chain"] for item in items.values()))
         self.assertEqual(brief["itinerary_focus"]["2026-10-02"]["locations"], ["K1", "K2", "K3"])
+
+    def test_golden_week_brief_is_compact_and_does_not_embed_raw_ensemble_details(self):
+        config = pipeline.load_config()
+        empty = {"points": {}}
+        brief = pipeline.build_golden_week_brief(
+            config, date(2026, 9, 22), empty, empty, empty, {"members_total": 31, "points": {}},
+        )
+        serialized = json.dumps(brief, ensure_ascii=False, separators=(",", ":"))
+        self.assertLess(len(serialized), 250_000)
+        self.assertNotIn("_member", serialized)
+        self.assertNotIn("raw_points", serialized)
+        self.assertNotIn("event_day_distribution", serialized)
+        self.assertEqual(brief["holiday_overview"]["largest_model_disagreement_dates"], [])
+        self.assertEqual(brief["holiday_overview"]["single_ensemble_only_dates"], [])
+
+    def test_golden_week_brief_lists_only_true_disagreement_dates(self):
+        config = pipeline.load_config()
+        empty = {"points": {}}
+
+        def fake_location(config, point_id, target_date, forecast_date, hres, gfs, ensemble, gefs, cutoff_date):
+            date_key = target_date.isoformat()
+            agreement = "LOW" if date_key == "2026-10-02" else "ONE_ENSEMBLE_ONLY" if date_key == "2026-10-01" else "UNAVAILABLE"
+            return {
+                "location_id": point_id,
+                "location_name": point_id,
+                "usable_for_main_chain": True,
+                "forecast_granularity": "trend_only",
+                "daily": {
+                    "ec_det": {"cloud": 10},
+                    "gfs_det": {"cloud": 20},
+                },
+                "morning": {
+                    "ensemble_agreement": agreement,
+                    "viewing_conditions": {
+                        "cloud_signal": "CLEAR",
+                        "low_cloud_signal": "LOW",
+                        "precip_signal": "LOW",
+                        "wind_signal": "LOW",
+                    },
+                },
+                "afternoon": {
+                    "ensemble_agreement": agreement,
+                    "viewing_conditions": {
+                        "cloud_signal": "CLEAR",
+                        "low_cloud_signal": "LOW",
+                        "precip_signal": "LOW",
+                        "wind_signal": "LOW",
+                    },
+                },
+                "event_phase": {
+                    "cold_window": {"relevant_to_date": False},
+                    "precip_window": {"relevant_to_date": False},
+                    "snow_window": {"relevant_to_date": False},
+                },
+            }
+
+        with patch.object(pipeline, "_golden_location", side_effect=fake_location):
+            brief = pipeline.build_golden_week_brief(config, date(2026, 9, 22), empty, empty, empty, empty)
+        overview = brief["holiday_overview"]
+        self.assertEqual(overview["largest_model_disagreement_dates"], ["2026-10-02"])
+        self.assertEqual(overview["single_ensemble_only_dates"], ["2026-10-01"])
 
     def test_weather_event_flags_window_metrics_and_mechanical_stress(self):
         day = self.make_day("2026-09-01", -6)

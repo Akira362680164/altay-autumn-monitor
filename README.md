@@ -186,11 +186,13 @@ ChatGPT 可以用 16–35 天层提前关注 9 月 15–25 日前后的持续偏
 
 - `near_range` 使用 `ncep_gefs025`：全球约 0.25°、约 25 km、31 个序列，当前接口约 10 天；用于近中期成员分布和确定性 GFS 交叉验证。
 - `long_range` 使用 `ncep_gefs05`：全球约 0.5°、约 50 km、31 个序列，当前接口约 35 天；用于 11 天以后到 `2026-10-06` 的趋势、概率和过程窗口。粗网格结果不能当作村级小时级精准预报。
-- 当前 Ensemble API 文档没有 solar/shortwave 变量；程序会显式记录 `shortwave_radiation`/`sunshine_duration` 缺失，模块可为 `PARTIAL`，不会用其他平台补值。
+- GEFS 状态按必需/可选变量分层：`temperature_2m`、`precipitation`、`snowfall`、`cloud_cover` 和 `wind_gusts_10m` 是当前可用核心；低/中/高云层、相对湿度、平均风和日照变量按可选能力记录。当前真实接口在新疆返回的 `cloud_cover_low/mid/high` 可能为空数组/空成员序列，`shortwave_radiation`/`sunshine_duration` 也可能不可用；这些缺失只进入 `optional_missing_variables` 和 warning，不会把核心完整的点误判为 `PARTIAL`。如果核心字段、成员数或时间轴失败，点才会进入 `PARTIAL`/`FAILED`。任何缺失都不会用其他平台补值。
 - 每个窗口保留 temperature/cloud/low-cloud/precipitation/snowfall/gust 的百分位与概率，分母是 `members_valid`。成员缺失不会被当作零。
 - `CLOUD_EVENT`、`PRECIP_EVENT`、`SNOW_EVENT` 和 `COLD_EVENT` 只表示天气过程候选；输出 `event_start/event_peak/event_end` 的 p25/median/p75、最早/最晚、`phase_spread_hours`、`phase_confidence`、`multimodal` 和 `event_day_distribution`。这些字段不表示物候阶段、黄叶或掉叶。
 - `MORNING`、`AFTERNOON`、`NIGHT` 均按 `Asia/Shanghai` 聚合；10/6 的 NIGHT 会因硬截止只包含 10/6 当天 18:00 后的数据，不读取 10/7。
-- `summary.json.golden_week_brief` 是给下游日报快速读取的 2026-10-01 至 2026-10-06 简表。它只列 VERIFIED 点，提供 HRES/GFS deterministic、ECMWF Ensemble、GEFS、天气过程相位、deterministic support、EC/GEFS consensus、`viewing_conditions` 和固定 `itinerary_focus`；不含 10/7 以后日期，也不输出旅游建议或秋色结论。
+- `summary.json.golden_week_brief` 是给下游日报快速读取的 2026-10-01 至 2026-10-06 简表。它只列 VERIFIED 点，按 `days[date][point_id]` 提供 HRES/GFS deterministic、ECMWF Ensemble、GEFS、天气过程相位、deterministic support、EC/GEFS consensus、`viewing_conditions` 和固定 `itinerary_focus`；这里只保留百分位/概率和窗口结论，不复制成员数组、完整 event distribution、请求元数据或 debug 结构。完整细节仍在 `gefs.json`、`ensemble.json`、`hres.json` 和 `gfs.json`。不含 10/7 以后日期，也不输出旅游建议或秋色结论。
+
+跨集合状态严格区分：`HIGH`/`MEDIUM`/`LOW` 只表示 ECMWF Ensemble 与 GEFS 都有有效覆盖时的跨模型比较；`ONE_ENSEMBLE_ONLY` 表示只有一套集合有覆盖，`UNAVAILABLE` 表示两套集合都不可用。ECMWF Ensemble 超出预报时效不会被当作 `LOW` 分歧。`holiday_overview.largest_model_disagreement_dates` 只收录真实 `LOW`，`single_ensemble_only_dates` 单独列出只有一套集合覆盖的日期。
 
 时间尺度纪律：0–7 天可以看细观景窗口和集合分布；8–14 天以日期/过程为主，上午/下午只是低置信参考；15 天以后只读趋势、概率、过程窗口、相位离散度和风雪背景。3 小时数组的输出频率不等于 10 天以后拥有 3 小时预报精度。
 

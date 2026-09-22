@@ -24,7 +24,22 @@
     "phenology_weather_summary_path": {"type": "string", "const": "data/latest/phenology_weather_summary.json"},
     "weather_events_path": {"type": "string", "const": "data/latest/weather_events.json"},
     "gefs_path": {"type": "string", "const": "data/latest/gefs.json"},
-    "golden_week_brief": {"type": "object"},
+    "golden_week_brief": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string"},
+        "generated_at": {"type": ["string", "null"], "format": "date-time"},
+        "forecast_date": {"type": "string", "format": "date"},
+        "cutoff_date": {"type": "string", "const": "2026-10-06", "format": "date"},
+        "dates": {"type": "array", "items": {"type": "string", "format": "date"}},
+        "days": {"type": "object"},
+        "itinerary_focus": {"type": "object"},
+        "holiday_overview": {"type": "object"},
+        "verified_location_ids": {"type": "array", "items": {"type": "string"}},
+        "excluded_location_ids": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
     "regions": {
       "type": "object",
       "additionalProperties": {
