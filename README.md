@@ -44,7 +44,7 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 
 - [ECMWF Forecast API](https://open-meteo.com/en/docs/ecmwf-api)：主模型为 ECMWF IFS HRES 9 km，endpoint 为 `https://api.open-meteo.com/v1/ecmwf`。
 - [Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api)：endpoint 为 `https://archive-api.open-meteo.com/v1/archive`，固定 `models=ecmwf_ifs`。
-- [Ensemble API](https://open-meteo.com/en/docs/ensemble-api)：新疆使用全球 `ecmwf_ifs025_ensemble`，约 25 km、51 个成员。
+- [Ensemble API](https://open-meteo.com/en/docs/ensemble-api)：新疆使用全球 `ecmwf_ifs025_ensemble`，约 25 km、51 个成员；该模型官方预报长度为 15 天，当前模块请求 `forecast_days=15`。
 - [Single Runs API](https://open-meteo.com/en/docs/single-runs-api)：endpoint 为 `https://single-runs-api.open-meteo.com/v1/forecast`，固定 `models=ecmwf_ifs`，比较不同 UTC 初始化 run。
 - [GFS API](https://open-meteo.com/en/docs/gfs-api)：固定 GFS Global 0.11°（约 13 km），只作趋势交叉验证。
 - [Ensemble API](https://open-meteo.com/en/docs/ensemble-api) 与 [官方 Ensemble OpenAPI 注册表](https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml)：16–35 天背景层当前使用全球 GFS Ensemble 0.5°，请求模型 ID 为 `ncep_gefs05`。
@@ -190,11 +190,11 @@ ChatGPT 可以用 16–35 天层提前关注 9 月 15–25 日前后的持续偏
 - 每个窗口保留 temperature/cloud/low-cloud/precipitation/snowfall/gust 的百分位与概率，分母是 `members_valid`。成员缺失不会被当作零。
 - `CLOUD_EVENT`、`PRECIP_EVENT`、`SNOW_EVENT` 和 `COLD_EVENT` 只表示天气过程候选；输出 `event_start/event_peak/event_end` 的 p25/median/p75、最早/最晚、`phase_spread_hours`、`phase_confidence`、`multimodal` 和 `event_day_distribution`。这些字段不表示物候阶段、黄叶或掉叶。
 - `MORNING`、`AFTERNOON`、`NIGHT` 均按 `Asia/Shanghai` 聚合；10/6 的 NIGHT 会因硬截止只包含 10/6 当天 18:00 后的数据，不读取 10/7。
-- `summary.json.golden_week_brief` 是给下游日报快速读取的 2026-10-01 至 2026-10-06 简表。它只列 VERIFIED 点，按 `days[date][point_id]` 提供 HRES/GFS deterministic、ECMWF Ensemble、GEFS、天气过程相位、deterministic support、EC/GEFS consensus、`viewing_conditions` 和固定 `itinerary_focus`；这里只保留百分位/概率和窗口结论，不复制成员数组、完整 event distribution、请求元数据或 debug 结构。完整细节仍在 `gefs.json`、`ensemble.json`、`hres.json` 和 `gfs.json`。不含 10/7 以后日期，也不输出旅游建议或秋色结论。
+- `summary.json.golden_week_brief` 是给下游日报快速读取的 2026-10-01 至 2026-10-06 简表。它只列 VERIFIED 点，按 `days[date][point_id]` 提供 HRES/GFS deterministic、ECMWF Ensemble、GEFS、天气过程相位、deterministic support、EC/GEFS consensus、`viewing_conditions` 和固定 `itinerary_focus`；这里只保留百分位/概率和窗口结论，不复制成员数组、完整 event distribution、请求元数据或 debug 结构。完整细节仍在 `gefs.json`、`ensemble.json`、`hres.json` 和 `gfs.json`。ECMWF Ensemble 的 D8–15 数据可以进入对应日期窗口；旅行简表仍硬截止于 10/6，因此 10/7 不进入该简表，也不输出旅游建议或秋色结论。
 
 跨集合状态严格区分：`HIGH`/`MEDIUM`/`LOW` 只表示 ECMWF Ensemble 与 GEFS 都有有效覆盖时的跨模型比较；`ONE_ENSEMBLE_ONLY` 表示只有一套集合有覆盖，`UNAVAILABLE` 表示两套集合都不可用。ECMWF Ensemble 超出预报时效不会被当作 `LOW` 分歧。`holiday_overview.largest_model_disagreement_dates` 只收录真实 `LOW`，`single_ensemble_only_dates` 单独列出只有一套集合覆盖的日期。
 
-时间尺度纪律：0–7 天可以看细观景窗口和集合分布；8–14 天以日期/过程为主，上午/下午只是低置信参考；15 天以后只读趋势、概率、过程窗口、相位离散度和风雪背景。3 小时数组的输出频率不等于 10 天以后拥有 3 小时预报精度。
+时间尺度纪律：0–7 天可以看细观景窗口和集合分布；8–15 天以日期/过程为主，上午/下午只是低置信参考；16 天以后只读趋势、概率、过程窗口、相位离散度和风雪背景。3 小时数组的输出频率不等于 10 天以后拥有 3 小时预报精度。
 
 主链优先级仍为：`0–7 天 ECMWF HRES > ECMWF Ensemble > GFS`；`8–15 天 ECMWF HRES 趋势 + ECMWF Ensemble > GFS`；`16–35 天 GFS Ensemble background only`。GEFS 请求只对 `VERIFIED` 点进入正式 `gefs` 与 `golden_week_brief`；`PROVISIONAL`、`ROUTE_NOT_VERIFIED` 仍只会出现在排除/QA信息中。
 

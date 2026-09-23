@@ -76,6 +76,42 @@ class PipelineUnitTests(unittest.TestCase):
                 hourly[f"{variable}{suffix}"] = [value + member * 0.01 for value in base_values]
         return hourly
 
+    def make_ecmwf_ensemble_record(self, start_date=date(2026, 9, 23), days=15):
+        start = datetime.combine(start_date, datetime.min.time())
+        times = []
+        for day in range(days):
+            for hour in range(0, 24, 3):
+                times.append((start + timedelta(days=day, hours=hour)).strftime("%Y-%m-%dT%H:%M"))
+        hourly = {"time": times}
+        for variable in pipeline.ENSEMBLE_VARIABLES:
+            base_values = []
+            for index, _ in enumerate(times):
+                day = index // 8
+                hour = (index % 8) * 3
+                if variable == "temperature_2m":
+                    value = 8 - day * 0.1 + hour * 0.02
+                elif variable == "precipitation":
+                    value = 0.2 if day % 4 == 0 else 0.0
+                elif variable == "snowfall":
+                    value = 0.05 if day % 5 == 0 else 0.0
+                elif variable == "cloud_cover":
+                    value = 30 + day % 3
+                elif variable == "cloud_cover_low":
+                    value = 10 + day % 2
+                else:
+                    value = 20 + day % 4
+                base_values.append(value)
+            hourly[variable] = base_values
+            for member in range(1, 51):
+                suffix = f"_member{member:02d}"
+                hourly[f"{variable}{suffix}"] = [value + member * 0.01 for value in base_values]
+        return {
+            "status": "PASS",
+            "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800},
+            "qa": {"final_status": "PASS"},
+            "hourly": hourly,
+        }
+
     def test_haversine_distance(self):
         self.assertEqual(pipeline.haversine_km(0, 0, 0, 0), 0)
         self.assertAlmostEqual(pipeline.haversine_km(48.69583, 86.78382, 48.75, 86.75), 6.514, places=2)
@@ -1201,6 +1237,86 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(gefs_schema["properties"]["members_total"]["const"], 31)
         self.assertEqual(gefs_schema["properties"]["near_range_model_id"]["const"], "ncep_gefs025")
         self.assertEqual(gefs_schema["properties"]["long_range_model_id"]["const"], "ncep_gefs05")
+
+    def test_ecmwf_ensemble_requests_official_15_day_horizon(self):
+        config = pipeline.load_config()
+        requests = []
+        record = self.make_ecmwf_ensemble_record()
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"].copy())
+            return copy.deepcopy(record)
+
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            module = pipeline.run_ensemble(
+                config,
+                object(),
+                "2026-09-23T00:00:00Z",
+                "2026-09-22",
+            )
+
+        self.assertEqual(pipeline.ECMWF_ENSEMBLE_FORECAST_DAYS, 15)
+        self.assertEqual(module["status"], "OK")
+        self.assertEqual(module["requested_forecast_days"], 15)
+        self.assertEqual(len(requests), len(pipeline.core_region_ids(config)))
+        self.assertTrue(all(item["models"] == "ecmwf_ifs025_ensemble" for item in requests))
+        self.assertTrue(all(item["forecast_days"] == 15 for item in requests))
+        self.assertTrue(all(item["timezone"] == "Asia/Shanghai" for item in requests))
+        self.assertTrue(all(item["cell_selection"] == "nearest" for item in requests))
+        self.assertTrue(all(item["elevation"] == "nan" for item in requests))
+        k1_daily = module["points"]["K1"]["ensemble"]["distributions"]["daily_mean"]
+        k1_dates = {item["date"] for item in k1_daily}
+        self.assertEqual(len(k1_dates), 15)
+        self.assertIn("2026-10-02", k1_dates)
+        self.assertIn("2026-10-07", k1_dates)
+        self.assertEqual(module["points"]["K1"]["qa"]["ensemble_member_check"]["status"], "PASS")
+
+    def test_ecmwf_ensemble_d8_d15_reaches_brief_but_cutoff_keeps_oct7_out(self):
+        config = pipeline.load_config()
+        full_record = self.make_ecmwf_ensemble_record()
+        ensemble = {
+            "model": "ECMWF IFS 0.25° Ensemble",
+            "model_id": "ecmwf_ifs025_ensemble",
+            "total_members": 51,
+            "points": {"K1": full_record},
+        }
+        brief = pipeline.build_golden_week_brief(
+            config,
+            date(2026, 9, 23),
+            {"points": {}},
+            {"points": {}},
+            ensemble,
+            {"points": {}},
+        )
+
+        for date_key in ("2026-10-02", "2026-10-03"):
+            ec_view = brief["days"][date_key]["K1"]["morning"]["ec_ens"]
+            self.assertTrue(ec_view["available"])
+            self.assertEqual(ec_view["members_valid"], 51)
+            self.assertIn(ec_view["status"], {"OK", "PARTIAL"})
+            self.assertEqual(brief["days"][date_key]["K1"]["morning"]["ensemble_agreement"], "ONE_ENSEMBLE_ONLY")
+
+        self.assertNotIn("2026-10-07", brief["dates"])
+        self.assertNotIn("2026-10-07", json.dumps(brief, ensure_ascii=False))
+        self.assertEqual(
+            pipeline._ensemble_window_view(
+                full_record,
+                date(2026, 10, 7),
+                "MORNING",
+                date(2026, 10, 6),
+            )["reason"],
+            "OUTSIDE_ECMWF_ENSEMBLE_HORIZON",
+        )
+        short_record = self.make_ecmwf_ensemble_record(days=7)
+        self.assertEqual(
+            pipeline._ensemble_window_view(
+                short_record,
+                date(2026, 10, 2),
+                "MORNING",
+                date(2026, 10, 6),
+            )["reason"],
+            "OUTSIDE_ECMWF_ENSEMBLE_HORIZON",
+        )
 
     def make_gefs_hourly(self, days=6, step_hours=3):
         start = datetime(2026, 9, 28)

@@ -87,6 +87,7 @@ ENSEMBLE_VARIABLES = [
     "cloud_cover",
     "cloud_cover_low",
 ]
+ECMWF_ENSEMBLE_FORECAST_DAYS = 15
 LONG_RANGE_MODEL_ID = "ncep_gefs05"
 LONG_RANGE_MODEL = "GFS Ensemble 0.5°"
 LONG_RANGE_ENSEMBLE_MEMBERS = 31
@@ -5060,7 +5061,7 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
             params=base_weather_params(
                 point,
                 models="ecmwf_ifs025_ensemble",
-                forecast_days=7,
+                forecast_days=ECMWF_ENSEMBLE_FORECAST_DAYS,
             ),
             variables=ENSEMBLE_VARIABLES,
             required_variables=ENSEMBLE_VARIABLES,
@@ -5096,6 +5097,7 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
         model_id="ecmwf_ifs025_ensemble",
         resolution="0.25° (~25 km)",
         total_members=51,
+        requested_forecast_days=ECMWF_ENSEMBLE_FORECAST_DAYS,
         notes=[
             "Global 51-member ECMWF IFS ensemble is used for Xinjiang.",
             "Ensemble spread is signal robustness, not village-level temperature precision.",
