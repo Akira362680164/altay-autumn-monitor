@@ -5,19 +5,23 @@
   "excluded_points": {},
   "generated_at": "2026-09-24T01:46:00Z",
   "hourly_values_omitted": true,
+  "min_required_runs": 2,
   "model": "ECMWF IFS HRES 9 km",
   "model_id": "ecmwf_ifs",
   "module": "single_runs",
-  "note": "Run timestamps are UTC initialization times; API availability follows model distribution delay.",
+  "note": "Run timestamps are UTC initialization times; API availability follows model distribution delay. Only the 00Z/12Z full-horizon cycles are required for the run-to-run drift comparison; the 06Z/18Z short cycles cannot reach a target more than about six days out and are reported without penalty.",
   "regions": {
     "erdaoqiao": {
       "latest_change": {
+        "comparison": "newest_two_successful_runs",
         "latest_init_time": "2026-09-23T18:00:00Z",
         "previous_init_time": "2026-09-23T12:00:00Z",
         "status": "DOWN",
         "value_c": -0.3
       },
       "point_id": "EJ1",
+      "required_run_count_available": 4,
+      "required_run_count_requested": 4,
       "run_count_available": 8,
       "run_count_requested": 8,
       "runs": [
@@ -324,7 +328,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.40018558502197266,
+              "generationtime_ms": 0.2683401107788086,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -341,7 +345,7 @@
               "model_run_initialization": "2026-09-23T18:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:15Z",
+              "retrieval_time": "2026-09-24T04:39:21Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -800,7 +804,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.34630298614501953,
+              "generationtime_ms": 1.366257667541504,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -817,7 +821,7 @@
               "model_run_initialization": "2026-09-23T12:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:17Z",
+              "retrieval_time": "2026-09-24T04:39:22Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -1164,7 +1168,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3339052200317383,
+              "generationtime_ms": 0.28908252716064453,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -1181,7 +1185,7 @@
               "model_run_initialization": "2026-09-23T06:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:18Z",
+              "retrieval_time": "2026-09-24T04:39:23Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -1640,7 +1644,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 1.4420747756958008,
+              "generationtime_ms": 1.0671615600585938,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -1657,7 +1661,7 @@
               "model_run_initialization": "2026-09-23T00:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:20Z",
+              "retrieval_time": "2026-09-24T04:39:24Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -2004,7 +2008,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.40662288665771484,
+              "generationtime_ms": 0.6642341613769531,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -2021,7 +2025,7 @@
               "model_run_initialization": "2026-09-22T18:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:21Z",
+              "retrieval_time": "2026-09-24T04:39:25Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -2480,7 +2484,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2745389938354492,
+              "generationtime_ms": 0.2802610397338867,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -2497,7 +2501,7 @@
               "model_run_initialization": "2026-09-22T12:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:22Z",
+              "retrieval_time": "2026-09-24T04:39:26Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -2844,7 +2848,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2598762512207031,
+              "generationtime_ms": 0.8524656295776367,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -2861,7 +2865,7 @@
               "model_run_initialization": "2026-09-22T06:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:24Z",
+              "retrieval_time": "2026-09-24T04:39:27Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -3320,7 +3324,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 1.4890432357788086,
+              "generationtime_ms": 1.9371509552001953,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -3337,7 +3341,7 @@
               "model_run_initialization": "2026-09-22T00:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:25Z",
+              "retrieval_time": "2026-09-24T04:39:28Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -3382,20 +3386,27 @@
           "target_time": "2026-09-27T05:00"
         }
       ],
+      "short_run_count_available": 4,
+      "short_run_count_requested": 4,
       "status": "OK",
+      "status_reason": null,
       "target_policy": "rolling_plus_3_days_no_visit_date",
+      "target_reachable_by_short_runs": true,
       "target_time": "2026-09-27T05:00+08:00",
       "usable_for_main_chain": true,
       "visit_date": null
     },
     "qidaoqiao": {
       "latest_change": {
+        "comparison": "newest_two_successful_runs",
         "latest_init_time": "2026-09-23T18:00:00Z",
         "previous_init_time": "2026-09-23T12:00:00Z",
         "status": "NO_CHANGE",
         "value_c": 0.0
       },
       "point_id": "EJ3",
+      "required_run_count_available": 4,
+      "required_run_count_requested": 4,
       "run_count_available": 8,
       "run_count_requested": 8,
       "runs": [
@@ -3702,7 +3713,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3038644790649414,
+              "generationtime_ms": 0.2454519271850586,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -3719,7 +3730,7 @@
               "model_run_initialization": "2026-09-23T18:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:42Z",
+              "retrieval_time": "2026-09-24T04:39:38Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -4178,7 +4189,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.34809112548828125,
+              "generationtime_ms": 0.38802623748779297,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -4195,7 +4206,7 @@
               "model_run_initialization": "2026-09-23T12:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:43Z",
+              "retrieval_time": "2026-09-24T04:39:39Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -4542,7 +4553,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.18966197967529297,
+              "generationtime_ms": 0.23257732391357422,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -4559,7 +4570,7 @@
               "model_run_initialization": "2026-09-23T06:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:45Z",
+              "retrieval_time": "2026-09-24T04:39:40Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5018,7 +5029,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.27751922607421875,
+              "generationtime_ms": 0.27000904083251953,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -5035,7 +5046,7 @@
               "model_run_initialization": "2026-09-23T00:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:47Z",
+              "retrieval_time": "2026-09-24T04:39:41Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5382,7 +5393,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.24211406707763672,
+              "generationtime_ms": 0.2512931823730469,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -5399,7 +5410,7 @@
               "model_run_initialization": "2026-09-22T18:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:51Z",
+              "retrieval_time": "2026-09-24T04:39:42Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5858,7 +5869,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2669095993041992,
+              "generationtime_ms": 0.2535581588745117,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -5875,7 +5886,7 @@
               "model_run_initialization": "2026-09-22T12:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:53Z",
+              "retrieval_time": "2026-09-24T04:39:43Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -6222,7 +6233,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2799034118652344,
+              "generationtime_ms": 0.24068355560302734,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -6239,7 +6250,7 @@
               "model_run_initialization": "2026-09-22T06:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:55Z",
+              "retrieval_time": "2026-09-24T04:39:44Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -6698,7 +6709,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.36644935607910156,
+              "generationtime_ms": 0.22029876708984375,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -6715,7 +6726,7 @@
               "model_run_initialization": "2026-09-22T00:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:42:01Z",
+              "retrieval_time": "2026-09-24T04:39:45Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -6760,20 +6771,27 @@
           "target_time": "2026-09-27T05:00"
         }
       ],
+      "short_run_count_available": 4,
+      "short_run_count_requested": 4,
       "status": "OK",
+      "status_reason": null,
       "target_policy": "rolling_plus_3_days_no_visit_date",
+      "target_reachable_by_short_runs": true,
       "target_time": "2026-09-27T05:00+08:00",
       "usable_for_main_chain": true,
       "visit_date": null
     },
     "sidaoqiao": {
       "latest_change": {
+        "comparison": "newest_two_successful_runs",
         "latest_init_time": "2026-09-23T18:00:00Z",
         "previous_init_time": "2026-09-23T12:00:00Z",
         "status": "DOWN",
         "value_c": -0.1
       },
       "point_id": "EJ2",
+      "required_run_count_available": 4,
+      "required_run_count_requested": 4,
       "run_count_available": 8,
       "run_count_requested": 8,
       "runs": [
@@ -7080,7 +7098,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.31769275665283203,
+              "generationtime_ms": 1.1042356491088867,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -7097,7 +7115,7 @@
               "model_run_initialization": "2026-09-23T18:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:27Z",
+              "retrieval_time": "2026-09-24T04:39:29Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -7556,7 +7574,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.28121471405029297,
+              "generationtime_ms": 0.5273818969726562,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -7573,7 +7591,7 @@
               "model_run_initialization": "2026-09-23T12:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:28Z",
+              "retrieval_time": "2026-09-24T04:39:30Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -7920,7 +7938,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.4850625991821289,
+              "generationtime_ms": 0.3597736358642578,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -7937,7 +7955,7 @@
               "model_run_initialization": "2026-09-23T06:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:30Z",
+              "retrieval_time": "2026-09-24T04:39:31Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -8396,7 +8414,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-23T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.4018545150756836,
+              "generationtime_ms": 0.5946159362792969,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -8413,7 +8431,7 @@
               "model_run_initialization": "2026-09-23T00:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:32Z",
+              "retrieval_time": "2026-09-24T04:39:32Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -8760,7 +8778,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.27954578399658203,
+              "generationtime_ms": 0.24056434631347656,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -8777,7 +8795,7 @@
               "model_run_initialization": "2026-09-22T18:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:35Z",
+              "retrieval_time": "2026-09-24T04:39:34Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -9236,7 +9254,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.4857778549194336,
+              "generationtime_ms": 0.25403499603271484,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -9253,7 +9271,7 @@
               "model_run_initialization": "2026-09-22T12:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:38Z",
+              "retrieval_time": "2026-09-24T04:39:35Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -9600,7 +9618,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2834796905517578,
+              "generationtime_ms": 0.2728700637817383,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -9617,7 +9635,7 @@
               "model_run_initialization": "2026-09-22T06:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 144,
-              "retrieval_time": "2026-09-24T02:41:40Z",
+              "retrieval_time": "2026-09-24T04:39:36Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -10076,7 +10094,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-09-22T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.29349327087402344,
+              "generationtime_ms": 0.3184080123901367,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -10093,7 +10111,7 @@
               "model_run_initialization": "2026-09-22T00:00:00Z",
               "original_timestep_count": 240,
               "retained_timestep_count": 239,
-              "retrieval_time": "2026-09-24T02:41:41Z",
+              "retrieval_time": "2026-09-24T04:39:37Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -10138,13 +10156,19 @@
           "target_time": "2026-09-27T05:00"
         }
       ],
+      "short_run_count_available": 4,
+      "short_run_count_requested": 4,
       "status": "OK",
+      "status_reason": null,
       "target_policy": "rolling_plus_3_days_no_visit_date",
+      "target_reachable_by_short_runs": true,
       "target_time": "2026-09-27T05:00+08:00",
       "usable_for_main_chain": true,
       "visit_date": null
     }
   },
+  "required_cycles": "00, 12 UTC (full horizon)",
+  "required_runs_requested": 4,
   "run_frequency": "00, 06, 12, 18 UTC",
   "runs": [
     "2026-09-23T18:00:00Z",
@@ -10158,5 +10182,7 @@
   ],
   "runs_requested": 8,
   "schema_version": "1.4.0",
+  "short_cycles": "06, 18 UTC (short runs; not required)",
+  "short_runs_requested": 4,
   "status": "OK"
 }
