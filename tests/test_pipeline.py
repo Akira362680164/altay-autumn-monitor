@@ -2025,5 +2025,631 @@ class PipelineUnitTests(unittest.TestCase):
             self.assertEqual(loaded[0]["status"], "PARTIAL")
 
 
+    # ------------------------------------------------------------------
+    # Unified weather variable system (schema 1.4.0)
+    # ------------------------------------------------------------------
+
+    def make_unified_deterministic_record(self, *, start=datetime(2026, 9, 30), days=7):
+        """A deterministic series carrying every unified variable.
+
+        Layers carry deliberately distinct values so that any accidental
+        total-minus-low derivation is immediately visible.
+        """
+        times = []
+        for offset in range(days * 24):
+            times.append((start + timedelta(hours=offset)).strftime("%Y-%m-%dT%H:%M"))
+        hourly = {"time": times}
+        for index, stamp in enumerate(times):
+            hour = int(stamp[11:13])
+            hourly.setdefault("temperature_2m", []).append(8.0 + hour * 0.1)
+            hourly.setdefault("dew_point_2m", []).append(2.0 + hour * 0.05)
+            hourly.setdefault("relative_humidity_2m", []).append(70.0)
+            hourly.setdefault("precipitation", []).append(0.4 if hour == 15 else 0.0)
+            hourly.setdefault("rain", []).append(0.3 if hour == 15 else 0.0)
+            hourly.setdefault("snowfall", []).append(0.0)
+            hourly.setdefault("cloud_cover", []).append(80.0)
+            hourly.setdefault("cloud_cover_low", []).append(60.0)
+            hourly.setdefault("cloud_cover_mid", []).append(30.0)
+            hourly.setdefault("cloud_cover_high", []).append(10.0)
+            hourly.setdefault("wind_speed_10m", []).append(12.0)
+            hourly.setdefault("wind_direction_10m", []).append(350.0 if index % 2 == 0 else 10.0)
+            hourly.setdefault("wind_gusts_10m", []).append(45.0)
+            hourly.setdefault("sunshine_duration", []).append(1200.0)
+        return {
+            "status": "PASS",
+            "source": "Open-Meteo",
+            "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800},
+            "solar_variable": "sunshine_duration",
+            "hourly": hourly,
+        }
+
+    def test_unified_variable_constants_keep_models_independent(self):
+        # 1. The same vocabulary is requested from every forecast model.
+        self.assertEqual(set(pipeline.HRES_VARIABLES), set(pipeline.GFS_VARIABLES))
+        self.assertEqual(set(pipeline.HRES_VARIABLES), set(pipeline.ENSEMBLE_VARIABLES))
+        self.assertEqual(set(pipeline.HRES_VARIABLES), set(pipeline.GEFS_CORE_VARIABLES))
+        for variable in ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            self.assertIn(variable, pipeline.HRES_VARIABLES)
+            self.assertIn(variable, pipeline.GFS_VARIABLES)
+        # 2. Sustained wind and gust stay separate quantities.
+        self.assertTrue(set(pipeline.GUST_VARIABLES).isdisjoint(pipeline.SUSTAINED_WIND_VARIABLES))
+        self.assertEqual(pipeline.GUST_VARIABLES, ("wind_gusts_10m",))
+        self.assertEqual(pipeline.SUSTAINED_WIND_VARIABLES, ("wind_speed_10m",))
+        self.assertEqual(pipeline.GUST_THRESHOLD_LEVELS_KMH, (30.0, 40.0, 50.0, 60.0))
+        # 3. Wind direction is never reduced with arithmetic percentiles.
+        self.assertNotIn("wind_direction_10m", pipeline.ENSEMBLE_DISTRIBUTION_VARIABLES)
+        self.assertEqual(pipeline.ECMWF_ENSEMBLE_FORECAST_DAYS, 15)
+
+    def test_hres_parses_four_cloud_layers_from_api_values(self):
+        record = self.make_unified_deterministic_record()
+        window = pipeline._deterministic_hourly_window(
+            record, date(2026, 9, 30), "AFTERNOON", date(2026, 10, 6)
+        )
+        self.assertEqual(window["status"], "OK")
+        self.assertEqual(window["total_cloud_pct"], 80.0)
+        self.assertEqual(window["low_cloud_pct"], 60.0)
+        self.assertEqual(window["mid_cloud_pct"], 30.0)
+        self.assertEqual(window["high_cloud_pct"], 10.0)
+        # Mid/high cloud come from the API, never from total minus low.
+        self.assertNotEqual(window["mid_cloud_pct"], window["total_cloud_pct"] - window["low_cloud_pct"])
+        self.assertNotEqual(window["high_cloud_pct"], window["total_cloud_pct"] - window["low_cloud_pct"])
+        compact = pipeline._compact_deterministic_view(window)
+        self.assertEqual(compact["mid_cloud"], 30.0)
+        self.assertEqual(compact["high_cloud"], 10.0)
+
+    def test_gfs_module_publishes_four_cloud_layers_and_variable_status(self):
+        config = pipeline.load_config()
+        record = self.make_unified_deterministic_record()
+        record["daily"] = [
+            {"date": (date(2026, 9, 30) + timedelta(days=offset)).isoformat(), "complete": True}
+            for offset in range(7)
+        ]
+        record["variable_status"] = pipeline.variable_status_classification(
+            pipeline.variable_availability(record["hourly"], pipeline.GFS_VARIABLES),
+            required_variables=pipeline.GFS_REQUIRED_VARIABLES,
+            optional_variables=pipeline.GFS_OPTIONAL_VARIABLES,
+        )
+        with patch.object(pipeline, "fetch_point", return_value=copy.deepcopy(record)) as fetch:
+            module = pipeline.run_gfs(config, object(), "2026-09-30T00:00:00Z", "2026-09-30")
+        requested = fetch.call_args.kwargs["variables"]
+        for variable in ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            self.assertIn(variable, requested)
+        self.assertEqual(module["status"], "OK")
+        for variable in ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            self.assertEqual(module["variable_status"][variable], "OK")
+        self.assertEqual(module["required_unavailable_variables"], [])
+        self.assertEqual(module["unavailable_variables"], [])
+
+    def test_ec_ensemble_publishes_layer_distribution_and_probability(self):
+        record = self.make_ecmwf_ensemble_record()
+        distributions = pipeline.ensemble_daily_distributions(record["hourly"])
+        first = distributions["variables"][0]
+        self.assertEqual(first["members_valid"], 51)
+        for variable in ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            stats = first["statistics"][variable]
+            self.assertEqual(stats["available_members"], 51)
+            self.assertLessEqual(stats["p10"], stats["median"])
+            self.assertLessEqual(stats["median"], stats["p90"])
+        probabilities = distributions["probabilities"][0]["probabilities"]
+        for name in ("cloud_cover_low_gt_50pct", "cloud_cover_mid_gt_50pct", "cloud_cover_high_gt_50pct"):
+            self.assertEqual(probabilities[name]["members_valid"], 51)
+            self.assertIsNotNone(probabilities[name]["probability"])
+        # Wind direction is not summarised with arithmetic percentiles.
+        self.assertNotIn("wind_direction_10m", first["statistics"])
+        self.assertTrue(first["statistics"]["wind_direction"]["circular_averaging"])
+        window = pipeline._ensemble_window_view(record, date(2026, 10, 1), "AFTERNOON", date(2026, 10, 6))
+        self.assertEqual(window["status"], "OK")
+        self.assertEqual(window["members_valid"], 51)
+
+    def test_gefs_null_layer_arrays_stay_optional_unavailable(self):
+        # Reproduce the real Xinjiang GEFS behaviour: cloud_cover_low/mid/high
+        # are returned as all-null arrays rather than missing keys.
+        hourly = self.make_gefs_hourly()
+        for variable in ("cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            for key in list(hourly):
+                if key == variable or key.startswith(f"{variable}_member"):
+                    hourly[key] = [None] * len(hourly["time"])
+        valid, check = pipeline._gefs_member_check(hourly)
+        self.assertTrue(valid)
+        self.assertEqual(check["status"], "PASS")
+        self.assertEqual(check["required_missing_variables"], [])
+        self.assertEqual(
+            set(check["optional_missing_variables"]),
+            {"cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"},
+        )
+        segment = pipeline._build_gefs_segment(
+            {"hourly": hourly, "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800}},
+            "long_range",
+            "ncep_gefs05",
+            "GFS Ensemble 0.5°",
+            "0.5° (~50 km)",
+            date(2026, 10, 6),
+        )
+        self.assertEqual(segment["status"], "OK")
+        self.assertEqual(segment["cloud_layer_status"]["cloud_cover"], "OK")
+        for variable in ("cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            self.assertEqual(segment["cloud_layer_status"][variable], "OPTIONAL_UNAVAILABLE")
+        self.assertEqual(segment["required_unavailable_variables"], [])
+        self.assertEqual(
+            set(segment["optional_unavailable_variables"]),
+            {"cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"},
+        )
+        statistics = segment["daily"][0]["statistics"]
+        self.assertEqual(statistics["cloud_cover"]["available_members"], 31)
+        # A null layer array yields no distribution: the total cloud cover is
+        # never substituted into the missing layer.
+        for variable in ("cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            self.assertEqual(statistics[variable]["available_members"], 0)
+            self.assertIsNone(statistics[variable]["median"])
+            probability = statistics["probabilities"][f"{variable}_gt_50pct"]
+            self.assertIsNone(probability["probability"])
+            self.assertEqual(probability["available_members"], 0)
+
+    def test_missing_layer_is_never_derived_from_total_cloud(self):
+        record = self.make_unified_deterministic_record()
+        for key in ("cloud_cover_mid", "cloud_cover_high"):
+            record["hourly"].pop(key)
+        window = pipeline._deterministic_hourly_window(
+            record, date(2026, 9, 30), "MORNING", date(2026, 10, 6)
+        )
+        self.assertEqual(window["total_cloud_pct"], 80.0)
+        self.assertEqual(window["low_cloud_pct"], 60.0)
+        self.assertIsNone(window["mid_cloud_pct"])
+        self.assertIsNone(window["high_cloud_pct"])
+        compact = pipeline._compact_deterministic_view(window)
+        self.assertIsNone(compact["mid_cloud"])
+        self.assertIsNone(compact["high_cloud"])
+
+    def test_unavailable_variables_are_published_as_null_or_unavailable(self):
+        unavailable = pipeline._compact_deterministic_view(
+            {"status": "UNAVAILABLE", "reason": "DETERMINISTIC_MODULE_UNAVAILABLE"}
+        )
+        self.assertFalse(unavailable["available"])
+        self.assertEqual(unavailable["status"], "UNAVAILABLE")
+        self.assertEqual(unavailable["reason"], "DETERMINISTIC_MODULE_UNAVAILABLE")
+
+        availability = pipeline.variable_availability(
+            {"time": ["2026-10-01T00:00"], "cloud_cover": [10.0], "cloud_cover_mid": [None]},
+            ["cloud_cover", "cloud_cover_mid", "cloud_cover_high"],
+        )
+        self.assertEqual(availability["cloud_cover"], "OK")
+        self.assertEqual(availability["cloud_cover_mid"], "NULL_ARRAY")
+        self.assertEqual(availability["cloud_cover_high"], "MISSING")
+        status = pipeline.variable_status_classification(
+            availability,
+            required_variables=("cloud_cover",),
+            optional_variables=("cloud_cover_mid", "cloud_cover_high"),
+        )
+        self.assertEqual(status["cloud_cover"], "OK")
+        self.assertEqual(status["cloud_cover_mid"], "OPTIONAL_UNAVAILABLE")
+        self.assertEqual(status["cloud_cover_high"], "OPTIONAL_UNAVAILABLE")
+        self.assertEqual(
+            pipeline.unavailable_variables_for(
+                status,
+                required_variables=("cloud_cover",),
+                optional_variables=("cloud_cover_mid", "cloud_cover_high"),
+            )["required_unavailable_variables"],
+            [],
+        )
+        # An optional cloud capability never invalidates the whole segment.
+        self.assertIn("OPTIONAL_UNAVAILABLE", pipeline.UNAVAILABLE_STATUSES)
+        self.assertNotIn("OK", pipeline.UNAVAILABLE_STATUSES)
+
+    def test_summary_compact_views_carry_every_unified_field(self):
+        record = self.make_unified_deterministic_record()
+        window = pipeline._deterministic_hourly_window(
+            record, date(2026, 9, 30), "AFTERNOON", date(2026, 10, 6)
+        )
+        compact = pipeline._compact_deterministic_view(window)
+        for field in (
+            "cloud", "low_cloud", "mid_cloud", "high_cloud", "precip_mm", "rain_mm", "snow_cm",
+            "temp_min_c", "temp_mean_c", "temp_max_c", "dew_point_c", "relative_humidity_pct",
+            "wind_speed_kmh", "wind_direction_deg", "gust_kmh", "sunshine_or_shortwave",
+        ):
+            self.assertIn(field, compact, field)
+        self.assertEqual(compact["precip_mm"], 0.4)
+        self.assertEqual(compact["rain_mm"], 0.3)
+        self.assertEqual(compact["dew_point_c"], 2.725)
+        self.assertEqual(compact["relative_humidity_pct"], 70.0)
+        self.assertEqual(compact["sunshine_or_shortwave"], {"variable": "sunshine_duration", "value": 7200.0})
+
+        ensemble_record = self.make_ecmwf_ensemble_record()
+        ensemble_view = pipeline._ensemble_window_view(
+            ensemble_record, date(2026, 10, 1), "AFTERNOON", date(2026, 10, 6)
+        )
+        ensemble_compact = pipeline._compact_ensemble_view(ensemble_view)
+        for field in (
+            "cloud_median", "low_cloud_median", "mid_cloud_median", "high_cloud_median",
+            "p_cloud_gt_70", "p_low_cloud_gt_50", "p_mid_cloud_gt_50", "p_high_cloud_gt_50",
+            "p_precip", "p_snow", "wind_speed_median", "gust_p90", "temp_p10", "temp_median",
+            "temp_p90", "dew_point_median", "relative_humidity_median", "layer_availability",
+        ):
+            self.assertIn(field, ensemble_compact, field)
+        self.assertEqual(
+            ensemble_compact["layer_availability"],
+            {
+                "cloud_cover": True,
+                "cloud_cover_low": True,
+                "cloud_cover_mid": True,
+                "cloud_cover_high": True,
+            },
+        )
+
+    def test_gust_and_sustained_wind_are_not_interchangeable(self):
+        record = self.make_unified_deterministic_record()
+        window = pipeline._deterministic_hourly_window(
+            record, date(2026, 9, 30), "AFTERNOON", date(2026, 10, 6)
+        )
+        compact = pipeline._compact_deterministic_view(window)
+        # Sustained mean wind and gust max come from different variables.
+        self.assertEqual(compact["wind_speed_kmh"], 12.0)
+        self.assertEqual(compact["gust_kmh"], 45.0)
+        self.assertNotEqual(compact["wind_speed_kmh"], compact["gust_kmh"])
+
+        member_values = [
+            {
+                "temperature_mean_c": 5.0,
+                "temperature_min_c": 1.0,
+                "temperature_max_c": 9.0,
+                "wind_speed_kmh": 10.0,
+                "wind_gust_kmh": 55.0 + index,
+            }
+            for index in range(31)
+        ]
+        summary = pipeline._gefs_distribution_summary(member_values, 31)
+        self.assertEqual(summary["wind_speed_10m"]["median"], 10.0)
+        self.assertGreaterEqual(summary["wind_gusts_10m"]["median"], 55.0)
+        # The gust probability uses the gust series, not the sustained wind.
+        self.assertEqual(summary["probabilities"]["gust_gt_50kmh"]["probability"], 1.0)
+        self.assertNotEqual(summary["wind_speed_10m"]["median"], summary["wind_gusts_10m"]["median"])
+
+    def test_wind_direction_uses_circular_averaging(self):
+        self.assertAlmostEqual(pipeline.circular_mean_degrees([350, 10]), 0.0, places=3)
+        self.assertNotAlmostEqual(pipeline.circular_mean_degrees([350, 10]), 180.0, places=1)
+        self.assertAlmostEqual(pipeline.circular_mean_degrees([10, 20, 30]), 20.0, places=1)
+        self.assertIsNone(pipeline.circular_mean_degrees([90, 270]))
+        self.assertIsNone(pipeline.circular_mean_degrees([]))
+        self.assertEqual(pipeline.circular_mean_degrees([360.0]), 0.0)
+        self.assertAlmostEqual(pipeline.circular_resultant_length([10, 10]), 1.0, places=3)
+        self.assertAlmostEqual(pipeline.circular_resultant_length([90, 270]), 0.0, places=3)
+        statistics = pipeline.wind_direction_statistics([350, 10])
+        self.assertEqual(statistics["mean_deg"], 0.0)
+        self.assertTrue(statistics["circular_averaging"])
+        self.assertEqual(statistics["sample_count"], 2)
+
+        record = self.make_unified_deterministic_record()
+        window = pipeline._deterministic_hourly_window(
+            record, date(2026, 9, 30), "AFTERNOON", date(2026, 10, 6)
+        )
+        self.assertEqual(window["wind_direction_mean_deg"], 0.0)
+        self.assertIsNotNone(window["wind_direction_resultant_length"])
+
+    def test_viewing_conditions_separate_layers_and_do_not_punish_high_cloud(self):
+        record = self.make_ecmwf_ensemble_record()
+        ec_window = pipeline._ensemble_window_view(record, date(2026, 10, 1), "AFTERNOON", date(2026, 10, 6))
+        gefs_like = copy.deepcopy(ec_window)
+        signal = pipeline._viewing_signal(gefs_like, ec_window, {}, "HIGH")
+        for field in (
+            "total_cloud_signal", "low_cloud_signal", "mid_cloud_signal", "high_cloud_signal",
+            "precip_signal", "snow_signal", "wind_signal", "visibility_related_signal",
+            "model_agreement",
+        ):
+            self.assertIn(field, signal, field)
+        self.assertIn("HIGH_CLOUD_IS_NOT_AUTOMATICALLY_BAD_WEATHER", signal["notes"])
+        # High cloud alone must not force a bad-weather verdict.
+        only_high = {
+            "status": "OK",
+            "statistics": {
+                "cloud_cover": {"median": 5.0, "available_members": 51},
+                "cloud_cover_low": {"median": 0.0, "available_members": 51},
+                "cloud_cover_mid": {"median": 0.0, "available_members": 51},
+                "cloud_cover_high": {"median": 90.0, "available_members": 51},
+                "relative_humidity_2m": {"median": 40.0, "available_members": 51},
+                "probabilities": {
+                    "cloud_cover_high_gt_50pct": {"probability": 0.9, "available_members": 51},
+                },
+            },
+        }
+        high_only = pipeline._viewing_signal(only_high, only_high, {}, None)
+        self.assertEqual(high_only["cloud_signal"], "CLEAR")
+        self.assertEqual(high_only["high_cloud_signal"], "HIGH")
+        self.assertIn("HIGH_CLOUD_ADDS_SKY_TEXTURE_AND_SUNRISE_SUNSET_POTENTIAL", high_only["notes"])
+        # No source at all degrades to UNCERTAIN without crashing.
+        none_signal = pipeline._viewing_signal({}, {}, {}, None)
+        self.assertEqual(none_signal["total_cloud_signal"], "UNCERTAIN")
+        self.assertEqual(none_signal["model_agreement"], "UNAVAILABLE")
+        self.assertEqual(
+            set(none_signal["layer_sources"].values()),
+            {"UNAVAILABLE"},
+        )
+
+    def test_viewing_conditions_fall_back_per_layer_when_gefs_has_no_layers(self):
+        # The real Xinjiang GEFS case: total cloud present, layered cloud null.
+        gefs_without_layers = {
+            "status": "OK",
+            "statistics": {
+                "cloud_cover": {"median": 55.0, "available_members": 31},
+                "cloud_cover_low": {"median": None, "available_members": 0},
+                "cloud_cover_mid": {"median": None, "available_members": 0},
+                "cloud_cover_high": {"median": None, "available_members": 0},
+                "relative_humidity_2m": {"median": None, "available_members": 0},
+                "probabilities": {
+                    "cloud_cover_gt_70pct": {"probability": 0.3, "available_members": 31},
+                },
+            },
+        }
+        ec_with_layers = {
+            "status": "OK",
+            "statistics": {
+                "cloud_cover": {"median": 60.0, "available_members": 51},
+                "cloud_cover_low": {"median": 70.0, "available_members": 51},
+                "cloud_cover_mid": {"median": 45.0, "available_members": 51},
+                "cloud_cover_high": {"median": 20.0, "available_members": 51},
+                "relative_humidity_2m": {"median": 80.0, "available_members": 51},
+                "probabilities": {
+                    "cloud_cover_low_gt_50pct": {"probability": 0.9, "available_members": 51},
+                    "cloud_cover_mid_gt_50pct": {"probability": 0.4, "available_members": 51},
+                    "cloud_cover_high_gt_50pct": {"probability": 0.1, "available_members": 51},
+                },
+            },
+        }
+        signal = pipeline._viewing_signal(gefs_without_layers, ec_with_layers, {}, "HIGH")
+        # Total cloud still comes from GEFS; the three layers come from ECMWF.
+        self.assertEqual(signal["layer_sources"]["cloud_cover"], "gefs")
+        self.assertEqual(signal["layer_sources"]["cloud_cover_low"], "ecmwf_ensemble")
+        self.assertEqual(signal["layer_sources"]["cloud_cover_mid"], "ecmwf_ensemble")
+        self.assertEqual(signal["layer_sources"]["cloud_cover_high"], "ecmwf_ensemble")
+        self.assertEqual(signal["low_cloud_signal"], "HIGH")
+        self.assertEqual(signal["mid_cloud_signal"], "MODERATE")
+        self.assertEqual(signal["high_cloud_signal"], "LOW")
+        self.assertEqual(signal["visibility_related_signal"], "HIGH")
+        self.assertEqual(signal["model_agreement"], "HIGH")
+        self.assertNotEqual(signal["low_cloud_signal"], "UNCERTAIN")
+
+    def test_fog_inputs_publish_raw_indicators_without_probability(self):
+        record = self.make_unified_deterministic_record(start=datetime(2026, 9, 29), days=4)
+        fog = pipeline._fog_inputs(record, date(2026, 9, 30), date(2026, 10, 6))
+        self.assertEqual(fog["status"], "OK")
+        self.assertFalse(fog["probability_published"])
+        for field in (
+            "previous_12h_precip_mm", "previous_24h_precip_mm", "night_relative_humidity",
+            "night_dew_point", "night_temp", "night_temp_dewpoint_spread",
+            "pre_dawn_wind_speed", "pre_dawn_gust", "night_total_cloud",
+            "night_low_cloud", "night_mid_cloud", "night_high_cloud",
+            "moisture_signal", "radiative_cooling_signal", "wind_signal", "system_low_cloud_risk",
+        ):
+            self.assertIn(field, fog, field)
+        serialized = json.dumps(fog, ensure_ascii=False)
+        self.assertNotIn("probability_pct", serialized)
+        self.assertNotIn("%", serialized)
+        missing = pipeline._fog_inputs(None, date(2026, 9, 30), date(2026, 10, 6))
+        self.assertEqual(missing["status"], "UNAVAILABLE")
+        self.assertFalse(missing["probability_published"])
+
+    def test_model_consistency_never_averages_models(self):
+        hres = {
+            "status": "OK",
+            "total_cloud_pct": 80.0,
+            "low_cloud_pct": 60.0,
+            "mid_cloud_pct": 30.0,
+            "high_cloud_pct": 10.0,
+            "temperature_mean_c": 6.0,
+            "precipitation_mm": 0.0,
+            "snowfall_cm": 0.0,
+            "wind_speed_mean_kmh": 12.0,
+            "gust_max_kmh": 45.0,
+        }
+        gfs = dict(hres)
+        ec_ens = {
+            "status": "OK",
+            "statistics": {
+                "cloud_cover": {"p10": 40.0, "p25": 50.0, "p75": 70.0, "p90": 80.0, "median": 75.0, "available_members": 51},
+                "cloud_cover_low": {"p10": 40.0, "p25": 50.0, "p75": 70.0, "p90": 80.0, "median": 55.0, "available_members": 51},
+                # The layer is absent, exactly like a null-array GEFS response.
+                "probabilities": {},
+            },
+        }
+        gefs = copy.deepcopy(ec_ens)
+        consistency = pipeline._model_consistency(hres, gfs, ec_ens, gefs)
+        self.assertEqual(consistency["averaging_policy"], "NO_CROSS_MODEL_AVERAGING")
+        self.assertEqual(
+            set(consistency),
+            {
+                "ec_hres_vs_ec_ensemble",
+                "gfs_deterministic_vs_gefs",
+                "ec_hres_vs_gfs_deterministic",
+                "ec_ensemble_vs_gefs",
+                "averaging_policy",
+            },
+        )
+        pair = consistency["ec_hres_vs_ec_ensemble"]
+        self.assertEqual(pair["cloud_cover"], "INSIDE_P10_P90")
+        self.assertEqual(pair["low_cloud"], "INSIDE_IQR")
+        # A layer the ensemble cannot supply stays UNAVAILABLE instead of being
+        # compared against the total cloud cover.
+        self.assertEqual(pair["mid_cloud"], "UNAVAILABLE")
+        self.assertEqual(pair["high_cloud"], "UNAVAILABLE")
+        deterministic_pair = consistency["ec_hres_vs_gfs_deterministic"]
+        self.assertEqual(deterministic_pair["variables"]["temperature_mean_c"]["comparison"], "HIGH")
+        self.assertEqual(deterministic_pair["variables"]["gust_max_kmh"]["comparison"], "HIGH")
+        # Two ensembles with identical medians agree, but they are compared --
+        # never merged into one averaged value.
+        self.assertEqual(consistency["ec_ensemble_vs_gefs"]["agreement"], "HIGH")
+        self.assertEqual(
+            consistency["ec_ensemble_vs_gefs"]["method"],
+            "independent comparison, no cross-model averaging",
+        )
+
+    def test_solar_probe_failure_does_not_mark_a_delivered_variable_missing(self):
+        # GEFS 0.5°: the unified request delivers sunshine_duration, while the
+        # standalone shortwave_radiation probe fails.
+        hourly = {"time": ["2026-10-01T00:00", "2026-10-01T01:00"], "sunshine_duration": [10.0, 20.0]}
+        self.assertEqual(
+            pipeline._solar_variables_still_missing({"hourly": hourly}),
+            ["shortwave_radiation"],
+        )
+        self.assertTrue(pipeline._gefs_solar_available({"hourly": hourly}))
+        # Neither alternative delivered: both are genuinely missing.
+        self.assertEqual(
+            pipeline._solar_variables_still_missing({"hourly": {"time": ["2026-10-01T00:00"]}}),
+            ["shortwave_radiation", "sunshine_duration"],
+        )
+        # The probe's own variable delivered, the other not.
+        self.assertEqual(
+            pipeline._solar_variables_still_missing(
+                {"hourly": {"time": ["2026-10-01T00:00"], "shortwave_radiation": [1.0]}}
+            ),
+            ["sunshine_duration"],
+        )
+        # An all-null array is not a delivered value.
+        self.assertEqual(
+            pipeline._solar_variables_still_missing(
+                {"hourly": {"time": ["2026-10-01T00:00"], "sunshine_duration": [None]}}
+            ),
+            ["shortwave_radiation", "sunshine_duration"],
+        )
+        self.assertFalse(pipeline._gefs_solar_available({"hourly": {"time": [], "sunshine_duration": []}}))
+
+        # A stale probe verdict recorded in gefs_missing_variables must not
+        # downgrade a variable the response actually delivered.
+        gefs_hourly = self.make_gefs_hourly()
+        for variable in ("cloud_cover_low", "cloud_cover_mid", "cloud_cover_high"):
+            for key in list(gefs_hourly):
+                if key == variable or key.startswith(f"{variable}_member"):
+                    gefs_hourly[key] = [None] * len(gefs_hourly["time"])
+        segment = pipeline._build_gefs_segment(
+            {
+                "hourly": gefs_hourly,
+                "solar_variable": "sunshine_duration",
+                "gefs_missing_variables": ["shortwave_radiation", "sunshine_duration"],
+                "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800},
+            },
+            "long_range",
+            "ncep_gefs05",
+            "GFS Ensemble 0.5°",
+            "0.5° (~50 km)",
+            date(2026, 10, 6),
+        )
+        self.assertEqual(segment["status"], "OK")
+        self.assertEqual(segment["variable_status"]["sunshine_duration"], "PARTIAL")
+
+        corrected = pipeline._build_gefs_segment(
+            {
+                "hourly": gefs_hourly,
+                "solar_variable": "sunshine_duration",
+                "gefs_missing_variables": ["shortwave_radiation"],
+                "response": {"timezone": "Asia/Shanghai", "utc_offset_seconds": 28800},
+            },
+            "long_range",
+            "ncep_gefs05",
+            "GFS Ensemble 0.5°",
+            "0.5° (~50 km)",
+            date(2026, 10, 6),
+        )
+        self.assertEqual(corrected["variable_status"]["sunshine_duration"], "OK")
+        self.assertIn("shortwave_radiation", corrected["optional_unavailable_variables"])
+        self.assertNotIn("sunshine_duration", corrected["optional_unavailable_variables"])
+        self.assertEqual(
+            corrected["optional_unavailable_variables"],
+            sorted(set(corrected["optional_unavailable_variables"])),
+        )
+
+    def test_schema_version_and_new_contracts_validate(self):
+        root = Path(__file__).resolve().parents[1]
+        # Schemas that describe a pipeline output artifact must track SCHEMA_VERSION.
+        artifact_schemas = {
+            "ejina_status.schema.json",
+            "ejina_summary.schema.json",
+            "gefs.schema.json",
+            "grid_registry.schema.json",
+            "history_cache.schema.json",
+            "history_forward.schema.json",
+            "long_range.schema.json",
+            "module.schema.json",
+            "phenology_weather_summary.schema.json",
+            "status.schema.json",
+            "summary.schema.json",
+            "weather_events.schema.json",
+            "weather_events_cache.schema.json",
+        }
+        for path in sorted((root / "schemas").glob("*.schema.json")):
+            schema = json.loads(path.read_text(encoding="utf-8"))
+            # check_schema raises SchemaError when the document itself is invalid.
+            Draft202012Validator.check_schema(schema)
+            const = (schema.get("properties", {}).get("schema_version") or {}).get("const")
+            if const is None:
+                continue
+            if path.name in artifact_schemas:
+                self.assertEqual(const, pipeline.SCHEMA_VERSION, path.name)
+            else:
+                # e.g. ejina_points.schema.json documents a config file, not an
+                # artifact, and keeps its own registry version.
+                self.assertIn(const, pipeline.COMPATIBLE_SCHEMA_VERSIONS, path.name)
+
+        summary_schema = json.loads((root / "schemas" / "summary.schema.json").read_text(encoding="utf-8"))
+        defs = summary_schema["$defs"]
+        root_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$ref": "#/$defs/goldenWeekLocation",
+            "$defs": defs,
+        }
+        record = self.make_unified_deterministic_record()
+        target = date(2026, 9, 30)
+        cutoff = date(2026, 10, 6)
+        deterministic = pipeline._compact_deterministic_view(
+            pipeline._deterministic_hourly_window(record, target, "MORNING", cutoff)
+        )
+        ensemble = pipeline._compact_ensemble_view(
+            pipeline._ensemble_window_view(
+                self.make_ecmwf_ensemble_record(), date(2026, 10, 1), "MORNING", cutoff
+            )
+        )
+        if ensemble["available"] is False:
+            ensemble = {
+                "available": True,
+                "status": "OK",
+                "cloud_median": 40.0,
+                "low_cloud_median": None,
+                "mid_cloud_median": None,
+                "high_cloud_median": None,
+                "layer_availability": {
+                    "cloud_cover": True,
+                    "cloud_cover_low": False,
+                    "cloud_cover_mid": False,
+                    "cloud_cover_high": False,
+                },
+            }
+        window = {
+            "ec_det": deterministic,
+            "gfs_det": deterministic,
+            "ec_ens": ensemble,
+            "gefs": ensemble,
+            "viewing_conditions": pipeline._viewing_signal({}, {}, {}, None),
+        }
+        payload = {
+            "location_id": "hemu",
+            "location_name": "禾木",
+            "usable_for_main_chain": True,
+            "forecast_granularity": "hourly_window_supported",
+            "daily": {"ec_det": deterministic, "gfs_det": deterministic},
+            "morning": window,
+            "afternoon": window,
+            "night": window,
+            "fog_inputs": pipeline._fog_inputs(record, target, cutoff),
+            "event_phase": {},
+        }
+        self.assertEqual(list(Draft202012Validator(root_schema).iter_errors(payload)), [])
+
+        status_schema = json.loads((root / "schemas" / "status.schema.json").read_text(encoding="utf-8"))
+        variable_status_validator = Draft202012Validator(status_schema["$defs"]["variableStatus"])
+        self.assertEqual(
+            list(variable_status_validator.iter_errors({
+                "temperature_2m": "OK",
+                "cloud_cover_mid": "OPTIONAL_UNAVAILABLE",
+            })),
+            [],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

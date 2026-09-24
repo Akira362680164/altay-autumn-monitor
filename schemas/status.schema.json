@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schema_version", "generated_at", "data_date", "pipeline_status", "modules", "points"],
   "properties": {
-    "schema_version": {"type": "string", "const": "1.3.0"},
+    "schema_version": {"type": "string", "const": "1.4.0"},
     "generated_at": {"type": "string", "format": "date-time"},
     "data_date": {"type": ["string", "null"]},
     "history_years": {"type": "array", "items": {"type": "integer"}},
@@ -15,11 +15,50 @@
       "additionalProperties": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "SKIPPED", "INVALID"]}
     },
     "module_details": {"type": "object"},
+    "variable_status": {
+      "type": "object",
+      "description": "Per-model per-variable availability, keyed by model family. A variable missing from the source is reported OPTIONAL_UNAVAILABLE / REQUIRED_UNAVAILABLE and is never substituted from another model.",
+      "properties": {
+        "ecmwf_deterministic_hres": {"$ref": "#/$defs/variableStatus"},
+        "ecmwf_ensemble": {"$ref": "#/$defs/variableStatus"},
+        "gfs_deterministic": {"$ref": "#/$defs/variableStatus"},
+        "gefs_ensemble": {"$ref": "#/$defs/variableStatus"}
+      },
+      "additionalProperties": true
+    },
+    "variable_model_policy": {
+      "type": "object",
+      "properties": {
+        "models": {"type": "array", "items": {"type": "string"}},
+        "independent": {"type": "boolean"},
+        "cross_model_averaging": {"type": "boolean", "const": false},
+        "unavailable_values_are_null": {"type": "boolean"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
     "points": {"type": "object"},
     "route_slots": {"type": "object"},
     "namespaces": {"type": "object"},
     "manual_phenology_baseline": {"type": ["object", "null"]},
     "failure_policy": {"type": "string"}
+  },
+  "$defs": {
+    "variableStatus": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "OK",
+          "PARTIAL",
+          "REQUIRED_UNAVAILABLE",
+          "OPTIONAL_UNAVAILABLE",
+          "MISSING",
+          "ARRAY_LENGTH_MISMATCH",
+          "NULL_ARRAY"
+        ]
+      }
+    }
   },
   "additionalProperties": true
 }

@@ -39,14 +39,16 @@ WEATHER_EVENTS_CACHE_DIR = ROOT / "data" / "cache" / "weather_events"
 TIMEZONE_NAME = "Asia/Shanghai"
 LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
 UTC = dt.timezone.utc
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.4.0"
 LEGACY_SCHEMA_VERSION = "1.0.0"
 PREVIOUS_SCHEMA_VERSION = "1.1.0"
 PRIOR_SCHEMA_VERSION = "1.2.0"
+PRIOR_MINOR_SCHEMA_VERSION = "1.3.0"
 COMPATIBLE_SCHEMA_VERSIONS = {
     LEGACY_SCHEMA_VERSION,
     PREVIOUS_SCHEMA_VERSION,
     PRIOR_SCHEMA_VERSION,
+    PRIOR_MINOR_SCHEMA_VERSION,
     SCHEMA_VERSION,
 }
 RAW_RETENTION_DAYS = 14
@@ -68,7 +70,67 @@ ALLOWED_HOSTS = {
     "single-runs-api.open-meteo.com",
 }
 
-HRES_VARIABLES = [
+# ---------------------------------------------------------------------------
+# Unified weather variable system (schema 1.4.0)
+# ---------------------------------------------------------------------------
+# Every forecast model requests and reports the same variable vocabulary.  The
+# four model families stay independent: ECMWF deterministic (HRES), ECMWF
+# ensemble, GFS deterministic and the GEFS ensemble.  Values are never averaged
+# across models and a missing variable is reported as unavailable instead of
+# being filled from another model.
+UNIFIED_CORE_VARIABLES = (
+    "temperature_2m",
+    "dew_point_2m",
+    "relative_humidity_2m",
+    "precipitation",
+    "rain",
+    "snowfall",
+    "cloud_cover",
+    "cloud_cover_low",
+    "cloud_cover_mid",
+    "cloud_cover_high",
+    "wind_speed_10m",
+    "wind_direction_10m",
+    "wind_gusts_10m",
+)
+UNIFIED_SOLAR_VARIABLES = ("sunshine_duration", "shortwave_radiation")
+UNIFIED_WEATHER_VARIABLES = (*UNIFIED_CORE_VARIABLES, "sunshine_duration")
+# Cloud layers must always come from the API.  Never derive mid/high cloud by
+# subtracting low cloud from the total: the layers overlap and are not additive.
+CLOUD_LAYER_VARIABLES = (
+    "cloud_cover",
+    "cloud_cover_low",
+    "cloud_cover_mid",
+    "cloud_cover_high",
+)
+# Sustained / mean wind speed is a different quantity from the gust.  Keep the
+# two names separate so a summary can never describe a gust as sustained wind.
+SUSTAINED_WIND_VARIABLES = ("wind_speed_10m",)
+GUST_VARIABLES = ("wind_gusts_10m",)
+GUST_THRESHOLD_LEVELS_KMH = (30.0, 40.0, 50.0, 60.0)
+CORE_REGION_VARIABLE_REQUIRED = (
+    "temperature_2m",
+    "precipitation",
+    "snowfall",
+    "cloud_cover",
+    "wind_gusts_10m",
+)
+
+HRES_VARIABLES = [*UNIFIED_WEATHER_VARIABLES]
+HRES_REQUIRED_VARIABLES = [value for value in CORE_REGION_VARIABLE_REQUIRED]
+HRES_OPTIONAL_VARIABLES = [
+    value for value in HRES_VARIABLES if value not in HRES_REQUIRED_VARIABLES
+]
+HRES_FALLBACK_SOLAR = "shortwave_radiation"
+GFS_VARIABLES = [*UNIFIED_WEATHER_VARIABLES]
+GFS_REQUIRED_VARIABLES = [value for value in CORE_REGION_VARIABLE_REQUIRED]
+GFS_OPTIONAL_VARIABLES = [
+    value for value in GFS_VARIABLES if value not in GFS_REQUIRED_VARIABLES
+]
+# The historical archive reader intentionally keeps the pre-1.4 variable set.
+# Widening it would change the historical request, re-trim cache rows and force
+# a full history re-download for no analytical gain.
+HISTORY_VARIABLES = [
     "temperature_2m",
     "precipitation",
     "snowfall",
@@ -78,15 +140,36 @@ HRES_VARIABLES = [
     "wind_speed_10m",
     "wind_gusts_10m",
 ]
-HRES_FALLBACK_SOLAR = "shortwave_radiation"
-ENSEMBLE_VARIABLES = [
+HISTORY_REQUIRED_VARIABLES = [
+    value for value in HISTORY_VARIABLES if value != "sunshine_duration"
+]
+# ECMWF single-run reproducibility comparison is not one of the four unified
+# model families; keep its request frozen so its run-to-run delta stays
+# comparable with the already published history.
+SINGLE_RUN_VARIABLES = [
     "temperature_2m",
     "precipitation",
     "snowfall",
-    "wind_gusts_10m",
     "cloud_cover",
     "cloud_cover_low",
+    "sunshine_duration",
+    "wind_speed_10m",
+    "wind_gusts_10m",
 ]
+SINGLE_RUN_REQUIRED_VARIABLES = [
+    value for value in SINGLE_RUN_VARIABLES if value != "sunshine_duration"
+]
+ENSEMBLE_VARIABLES = [*UNIFIED_WEATHER_VARIABLES]
+EC_ENSEMBLE_REQUIRED_VARIABLES = [value for value in CORE_REGION_VARIABLE_REQUIRED]
+EC_ENSEMBLE_OPTIONAL_VARIABLES = [
+    value for value in ENSEMBLE_VARIABLES if value not in EC_ENSEMBLE_REQUIRED_VARIABLES
+]
+EC_ENSEMBLE_TOTAL_MEMBERS = 51
+# Wind direction is a circular quantity: it is stored and validated hourly but
+# never reduced with an arithmetic mean into an ensemble distribution.
+ENSEMBLE_DISTRIBUTION_VARIABLES = tuple(
+    value for value in ENSEMBLE_VARIABLES if value != "wind_direction_10m"
+)
 ECMWF_ENSEMBLE_FORECAST_DAYS = 15
 LONG_RANGE_MODEL_ID = "ncep_gefs05"
 LONG_RANGE_MODEL = "GFS Ensemble 0.5°"
@@ -110,16 +193,7 @@ GEFS_GRID_QA_LIMITS_KM = {"near_range": 25.0, "long_range": 40.0}
 GEFS_CACHE_DIR = ROOT / "data" / "cache" / "gefs"
 GEFS_TRAVEL_CUTOFF_DATE = dt.date(2026, 10, 6)
 GEFS_CORE_VARIABLES = [
-    "temperature_2m",
-    "precipitation",
-    "snowfall",
-    "cloud_cover",
-    "cloud_cover_low",
-    "cloud_cover_mid",
-    "cloud_cover_high",
-    "wind_speed_10m",
-    "wind_gusts_10m",
-    "relative_humidity_2m",
+    *UNIFIED_WEATHER_VARIABLES,
 ]
 # The Open-Meteo GEFS response currently returns cloud_cover_low/mid/high as
 # null arrays for Xinjiang.  Keep the required/optional boundary explicit so
@@ -139,9 +213,28 @@ GEFS_OPTIONAL_VARIABLES = (
     "cloud_cover_mid",
     "cloud_cover_high",
     "relative_humidity_2m",
+    "dew_point_2m",
+    "rain",
     "wind_speed_10m",
+    "wind_direction_10m",
     *GEFS_OPTIONAL_SOLAR_VARIABLES,
 )
+# Variable availability vocabulary used by status.json and the module artifacts.
+VARIABLE_STATUS_OK = "OK"
+VARIABLE_STATUS_PARTIAL = "PARTIAL"
+VARIABLE_STATUS_REQUIRED_UNAVAILABLE = "REQUIRED_UNAVAILABLE"
+VARIABLE_STATUS_OPTIONAL_UNAVAILABLE = "OPTIONAL_UNAVAILABLE"
+VARIABLE_STATUS_MISSING = "MISSING"
+VARIABLE_STATUS_LENGTH_MISMATCH = "ARRAY_LENGTH_MISMATCH"
+VARIABLE_STATUS_NULL_ARRAY = "NULL_ARRAY"
+VARIABLE_STATUS_PARTIAL_NULL = "PARTIAL_NULL"
+UNAVAILABLE_STATUSES = frozenset({
+    VARIABLE_STATUS_REQUIRED_UNAVAILABLE,
+    VARIABLE_STATUS_OPTIONAL_UNAVAILABLE,
+    VARIABLE_STATUS_MISSING,
+    VARIABLE_STATUS_LENGTH_MISMATCH,
+    VARIABLE_STATUS_NULL_ARRAY,
+})
 GEFS_PHASE_RULE_VERSION = "gefs_event_phase_v1"
 GEFS_PHASE_THRESHOLDS = {
     "cloud_cover_pct": 70.0,
@@ -162,6 +255,22 @@ GEFS_WINDOW_DEFINITIONS = {
     "AFTERNOON": (12, 18),
     "NIGHT": (18, 8),
 }
+GOLDEN_WEEK_WINDOWS = ("MORNING", "AFTERNOON", "NIGHT")
+# Hemi morning-fog inputs.  These are raw indicators only; the pipeline never
+# emits a fabricated "fog probability".
+FOG_PRE_DAWN_START_HOUR = 4
+FOG_PRE_DAWN_END_HOUR = 8
+FOG_NIGHT_HOURS = 12
+FOG_DAY_HOURS = 24
+FOG_RADIATIVE_COOLING_SPREAD_C = 3.0
+FOG_WIND_CALM_KMH = 8.0
+FOG_WIND_BREAKUP_KMH = 18.0
+MODEL_CONSISTENCY_PAIRS = (
+    "ec_hres_vs_ec_ensemble",
+    "gfs_deterministic_vs_gefs",
+    "ec_hres_vs_gfs_deterministic",
+    "ec_ensemble_vs_gefs",
+)
 CORE_REGION_IDS = ("baihaba", "kanas", "hemu", "keketuohai")
 HISTORY_MODEL = "ECMWF IFS 9 km historical weather / analysis"
 HISTORY_MODEL_PARAMETER = "ecmwf_ifs"
@@ -499,6 +608,143 @@ def safe_sum(values: list[float]) -> float | None:
     return round(sum(values), 3) if values else None
 
 
+def circular_mean_degrees(values: list[float]) -> float | None:
+    """Vector average for a circular quantity such as a wind direction.
+
+    A plain arithmetic mean is wrong here: 350 deg and 10 deg average to 180 deg
+    arithmetically but to 0 deg in reality.  When the resultant vector length is
+    degenerate the direction is undefined and ``None`` is returned instead of a
+    meaningless number.
+    """
+    cleaned = [float(value) for value in values if isinstance(value, (int, float))]
+    if not cleaned:
+        return None
+    if len(cleaned) == 1:
+        return round(cleaned[0] % 360.0, 3) % 360.0
+    x = sum(math.cos(math.radians(value)) for value in cleaned)
+    y = sum(math.sin(math.radians(value)) for value in cleaned)
+    if abs(x) < 1e-9 and abs(y) < 1e-9:
+        return None
+    return round(math.degrees(math.atan2(y, x)) % 360.0, 3) % 360.0
+
+
+def circular_resultant_length(values: list[float]) -> float | None:
+    """Resultant vector length R in [0, 1]; 1 means perfectly aligned."""
+    cleaned = [float(value) for value in values if isinstance(value, (int, float))]
+    if not cleaned:
+        return None
+    x = sum(math.cos(math.radians(value)) for value in cleaned)
+    y = sum(math.sin(math.radians(value)) for value in cleaned)
+    return round(math.hypot(x, y) / len(cleaned), 3)
+
+
+def wind_direction_statistics(values: list[float]) -> dict:
+    return {
+        "mean_deg": circular_mean_degrees(values),
+        "resultant_length": circular_resultant_length(values),
+        "circular_averaging": True,
+        "convention": "degrees from true north, meteorological origin direction",
+        "sample_count": len([value for value in values if isinstance(value, (int, float))]),
+    }
+
+
+def variable_availability(hourly: dict, variables) -> dict[str, str]:
+    """Classify each requested variable against the returned hourly payload.
+
+    A returned-but-all-null array is an unavailable capability, not a value; it is
+    reported as such so no downstream layer can silently invent a replacement.
+    """
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    result: dict[str, str] = {}
+    for variable in variables:
+        values = hourly.get(variable)
+        if not isinstance(values, list):
+            result[variable] = VARIABLE_STATUS_MISSING
+            continue
+        if times and len(values) != len(times):
+            result[variable] = VARIABLE_STATUS_LENGTH_MISMATCH
+            continue
+        present = [value for value in values if value is not None]
+        if not present:
+            result[variable] = VARIABLE_STATUS_NULL_ARRAY
+        elif len(present) != len(values):
+            result[variable] = VARIABLE_STATUS_PARTIAL_NULL
+        else:
+            result[variable] = VARIABLE_STATUS_OK
+    return result
+
+
+def variable_status_classification(
+    availability: dict[str, str],
+    *,
+    required_variables=(),
+    optional_variables=(),
+) -> dict[str, str]:
+    """Map raw availability to the status vocabulary published in status.json."""
+    required = set(required_variables)
+    optional = set(optional_variables)
+    result: dict[str, str] = {}
+    for variable, raw in availability.items():
+        if raw == VARIABLE_STATUS_OK:
+            result[variable] = VARIABLE_STATUS_OK
+        elif raw == VARIABLE_STATUS_PARTIAL_NULL:
+            result[variable] = VARIABLE_STATUS_PARTIAL
+        elif variable in required:
+            result[variable] = VARIABLE_STATUS_REQUIRED_UNAVAILABLE
+        elif variable in optional:
+            result[variable] = VARIABLE_STATUS_OPTIONAL_UNAVAILABLE
+        else:
+            result[variable] = raw
+    return result
+
+
+def unavailable_variables_for(
+    variable_status: dict[str, str],
+    *,
+    required_variables=(),
+    optional_variables=(),
+) -> dict:
+    required = set(required_variables)
+    optional = set(optional_variables)
+    status_by_variable = variable_status or {}
+    required_unavailable = sorted(
+        variable
+        for variable, status in status_by_variable.items()
+        if variable in required and status not in {VARIABLE_STATUS_OK, VARIABLE_STATUS_PARTIAL}
+    )
+    optional_unavailable = sorted(
+        variable
+        for variable, status in status_by_variable.items()
+        if variable in optional and status not in {VARIABLE_STATUS_OK, VARIABLE_STATUS_PARTIAL}
+    )
+    return {
+        "required_unavailable_variables": required_unavailable,
+        "optional_unavailable_variables": optional_unavailable,
+        "unavailable_variables": sorted(set(required_unavailable) | set(optional_unavailable)),
+    }
+
+
+def aggregate_variable_status(variable_statuses: list[dict[str, str]]) -> dict[str, str]:
+    """Worst-case aggregation across points for a module-level variable report."""
+    order = {
+        VARIABLE_STATUS_REQUIRED_UNAVAILABLE: 5,
+        VARIABLE_STATUS_MISSING: 4,
+        VARIABLE_STATUS_LENGTH_MISMATCH: 4,
+        VARIABLE_STATUS_NULL_ARRAY: 4,
+        VARIABLE_STATUS_OPTIONAL_UNAVAILABLE: 3,
+        VARIABLE_STATUS_PARTIAL_NULL: 2,
+        VARIABLE_STATUS_PARTIAL: 2,
+        VARIABLE_STATUS_OK: 1,
+    }
+    result: dict[str, str] = {}
+    for item in variable_statuses:
+        for variable, status in (item or {}).items():
+            current = result.get(variable)
+            if current is None or order.get(status, 0) > order.get(current, 0):
+                result[variable] = status
+    return result
+
+
 def daily_metrics(hourly: dict, solar_variable: str | None = None) -> list[dict]:
     times = hourly.get("time") or []
     groups: dict[str, list[int]] = {}
@@ -511,12 +757,18 @@ def daily_metrics(hourly: dict, solar_variable: str | None = None) -> list[dict]
         night_indices = [index for index in indices if parse_local_api_time(times[index]).hour <= 6 or parse_local_api_time(times[index]).hour >= 20]
         night_temperatures = _values_for_indices(hourly, "temperature_2m", night_indices)
         precipitation = _values_for_indices(hourly, "precipitation", indices)
+        rain = _values_for_indices(hourly, "rain", indices)
         snowfall = _values_for_indices(hourly, "snowfall", indices)
         cloud = _values_for_indices(hourly, "cloud_cover", indices)
         cloud_low = _values_for_indices(hourly, "cloud_cover_low", indices)
+        cloud_mid = _values_for_indices(hourly, "cloud_cover_mid", indices)
+        cloud_high = _values_for_indices(hourly, "cloud_cover_high", indices)
+        humidity = _values_for_indices(hourly, "relative_humidity_2m", indices)
+        dew_point = _values_for_indices(hourly, "dew_point_2m", indices)
         sunshine = _values_for_indices(hourly, "sunshine_duration", indices)
         shortwave = _values_for_indices(hourly, "shortwave_radiation", indices)
         wind = _values_for_indices(hourly, "wind_speed_10m", indices)
+        wind_direction = _values_for_indices(hourly, "wind_direction_10m", indices)
         gust = _values_for_indices(hourly, "wind_gusts_10m", indices)
         classes = [
             (hourly.get("precision_class") or ["undetermined"] * len(times))[index]
@@ -530,12 +782,20 @@ def daily_metrics(hourly: dict, solar_variable: str | None = None) -> list[dict]
             "temperature_max_c": round(max(temperatures), 3) if temperatures else None,
             "temperature_mean_c": safe_mean(temperatures),
             "night_min_c": round(min(night_temperatures), 3) if night_temperatures else None,
+            "dew_point_mean_c": safe_mean(dew_point),
+            "relative_humidity_mean_pct": safe_mean(humidity),
             "precipitation_mm": safe_sum(precipitation),
+            "rain_mm": safe_sum(rain),
             "snowfall_cm": safe_sum(snowfall),
             "cloud_cover_mean_pct": safe_mean(cloud),
             "cloud_cover_low_mean_pct": safe_mean(cloud_low),
+            "cloud_cover_mid_mean_pct": safe_mean(cloud_mid),
+            "cloud_cover_high_mean_pct": safe_mean(cloud_high),
             "wind_speed_mean_kmh": safe_mean(wind),
+            "wind_direction_mean_deg": circular_mean_degrees(wind_direction),
+            "wind_direction_member_resultant_length": circular_resultant_length(wind_direction),
             "wind_gust_max_kmh": round(max(gust), 3) if gust else None,
+            "wind_gust_mean_kmh": safe_mean(gust),
             "precision_class": daily_precision_class(classes),
         }
         if solar_variable == "sunshine_duration" and sunshine:
@@ -750,6 +1010,28 @@ def validate_payload(
     }
 
 
+def degraded_variable_list(
+    requested_variables: list[str],
+    optional_variables,
+) -> list[str]:
+    """Drop unsupported optional variables while keeping the solar alternative.
+
+    This is the only sanctioned degradation path: the optional variable set is
+    removed and recorded, no other model's value is substituted, and the required
+    variables stay in the request.
+    """
+    optional = set(optional_variables)
+    result = []
+    for variable in requested_variables:
+        if variable == "sunshine_duration":
+            result.append(HRES_FALLBACK_SOLAR)
+        elif variable in optional:
+            continue
+        else:
+            result.append(variable)
+    return result
+
+
 def request_payload(
     client: ApiClient,
     *,
@@ -757,19 +1039,46 @@ def request_payload(
     params: dict[str, object],
     variables: list[str],
     label: str,
-) -> tuple[dict, str, str]:
+    optional_variables=(),
+) -> tuple[dict, str, str, list[str]]:
     requested_variables = list(variables)
     solar_variable = "sunshine_duration" if "sunshine_duration" in requested_variables else None
     try:
         payload, url = client.get_json(endpoint, {**params, "hourly": ",".join(requested_variables)}, label)
-        return payload, url, solar_variable or ""
+        return payload, url, solar_variable or "", []
     except OpenMeteoError as error:
-        if solar_variable and is_variable_error(error):
-            fallback = [HRES_FALLBACK_SOLAR if value == solar_variable else value for value in requested_variables]
+        if not is_variable_error(error):
+            raise
+        last_error = error
+    if solar_variable:
+        fallback = [HRES_FALLBACK_SOLAR if value == solar_variable else value for value in requested_variables]
+        try:
             log(f"[{label}] SOLAR VARIABLE FALLBACK: {solar_variable} -> {HRES_FALLBACK_SOLAR}")
-            payload, url = client.get_json(endpoint, {**params, "hourly": ",".join(fallback)}, label + ":SOLAR_FALLBACK")
-            return payload, url, HRES_FALLBACK_SOLAR
-        raise
+            payload, url = client.get_json(
+                endpoint, {**params, "hourly": ",".join(fallback)}, label + ":SOLAR_FALLBACK"
+            )
+            return payload, url, HRES_FALLBACK_SOLAR, []
+        except OpenMeteoError as error:
+            if not is_variable_error(error):
+                raise
+            last_error = error
+    # An optional variable that this model/endpoint does not serve must not take
+    # the whole model module down.  Record the drop explicitly and retry once.
+    reduced = degraded_variable_list(requested_variables, optional_variables)
+    if reduced and reduced != requested_variables:
+        dropped = [value for value in requested_variables if value not in reduced]
+        replaced_solar = solar_variable and "sunshine_duration" not in reduced
+        try:
+            log(f"[{label}] OPTIONAL VARIABLE DROP: {','.join(dropped)}")
+            payload, url = client.get_json(
+                endpoint, {**params, "hourly": ",".join(reduced)}, label + ":OPTIONAL_DROP"
+            )
+            return payload, url, HRES_FALLBACK_SOLAR if replaced_solar else (solar_variable or ""), dropped
+        except OpenMeteoError as error:
+            if not is_variable_error(error):
+                raise
+            last_error = error
+    raise last_error
 
 
 def invalid_record(
@@ -831,14 +1140,16 @@ def fetch_point(
     accepted_model_values: tuple[str, ...] = (),
     accepted_model_ids: tuple[str, ...] = (),
     max_forecast_date: dt.date | None = None,
+    optional_variables: tuple[str, ...] | list[str] = (),
 ) -> dict:
     try:
-        payload, url, solar_variable = request_payload(
+        payload, url, solar_variable, degraded_variables = request_payload(
             client,
             endpoint=endpoint,
             params=params,
             variables=variables,
             label=log_label,
+            optional_variables=optional_variables,
         )
     except OpenMeteoError as error:
         log(f"[{log_label}] FETCH FAILED: {error.reason}")
@@ -873,6 +1184,35 @@ def fetch_point(
     response["retrieval_time"] = iso_utc(dt.datetime.now(UTC))
     response["endpoint_url"] = url
     response["model_run_initialization"] = model_run_initialization or response.get("model_run_initialization")
+    payload_hourly = payload.get("hourly") if isinstance(payload.get("hourly"), dict) else {}
+    raw_availability = variable_availability(payload_hourly, variables)
+    variable_status = variable_status_classification(
+        raw_availability,
+        required_variables=required_variables,
+        optional_variables=optional_variables,
+    )
+    for variable in degraded_variables:
+        variable_status[variable] = (
+            VARIABLE_STATUS_REQUIRED_UNAVAILABLE
+            if variable in set(required_variables)
+            else VARIABLE_STATUS_OPTIONAL_UNAVAILABLE
+        )
+        raw_availability.setdefault(variable, VARIABLE_STATUS_MISSING)
+    availability = unavailable_variables_for(
+        variable_status,
+        required_variables=required_variables,
+        optional_variables=optional_variables,
+    )
+    if solar_variable == HRES_FALLBACK_SOLAR and "sunshine_duration" in variables:
+        variable_status["sunshine_duration"] = VARIABLE_STATUS_OPTIONAL_UNAVAILABLE
+        variable_status[HRES_FALLBACK_SOLAR] = VARIABLE_STATUS_OK
+        raw_availability["sunshine_duration"] = VARIABLE_STATUS_MISSING
+        raw_availability[HRES_FALLBACK_SOLAR] = VARIABLE_STATUS_OK
+        availability = unavailable_variables_for(
+            variable_status,
+            required_variables=required_variables,
+            optional_variables=optional_variables,
+        )
     record = {
         "point_id": point.get("id"),
         "point": {
@@ -893,6 +1233,13 @@ def fetch_point(
         "response": response,
         "qa": qa,
         "solar_variable": solar_variable,
+        "variable_status": variable_status,
+        "requested_variables": list(variables),
+        "required_variables": list(required_variables),
+        "optional_variables": list(optional_variables),
+        "degraded_variables": list(degraded_variables),
+        "raw_variable_availability": raw_availability,
+        **availability,
     }
     if qa["valid"]:
         hourly = payload["hourly"]
@@ -955,7 +1302,8 @@ def run_hres(config: dict, client: ApiClient, generated_at: str, data_date: str)
             model="ECMWF IFS HRES 9 km",
             params=base_weather_params(point, forecast_days=15),
             variables=HRES_VARIABLES,
-            required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
+            required_variables=HRES_REQUIRED_VARIABLES,
+            optional_variables=HRES_OPTIONAL_VARIABLES,
             grid_limit_km=HRES_GRID_QA_LIMIT_KM,
             log_label=f"{point_id}:HRES",
             precision_module="hres",
@@ -964,6 +1312,14 @@ def run_hres(config: dict, client: ApiClient, generated_at: str, data_date: str)
         records.append(record)
         by_id[point_id] = record
     status = module_status(records, len(points))
+    variable_status = aggregate_variable_status(
+        [record.get("variable_status") or {} for record in records]
+    )
+    unavailable = unavailable_variables_for(
+        variable_status,
+        required_variables=HRES_REQUIRED_VARIABLES,
+        optional_variables=HRES_OPTIONAL_VARIABLES,
+    )
     return module_header(
         "hres",
         generated_at,
@@ -974,6 +1330,11 @@ def run_hres(config: dict, client: ApiClient, generated_at: str, data_date: str)
         native_resolution="9 km",
         precision_policy=PRECISION_POLICIES["hres"],
         interpolation_note="Open-Meteo returns an hourly series; after 90 h and 144 h it represents coarser native IFS time steps.",
+        requested_variables=list(HRES_VARIABLES),
+        required_variables=list(HRES_REQUIRED_VARIABLES),
+        optional_variables=list(HRES_OPTIONAL_VARIABLES),
+        variable_status=variable_status,
+        **unavailable,
         points=by_id,
         excluded_points=excluded_points(config),
         successful_points=sum(record.get("status") == "PASS" for record in records),
@@ -1498,8 +1859,8 @@ def history_cache_record_or_fetch(
                 start_date=fetch_start,
                 end_date=fetch_end,
             ),
-            variables=HRES_VARIABLES,
-            required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
+            variables=HISTORY_VARIABLES,
+            required_variables=HISTORY_REQUIRED_VARIABLES,
             grid_limit_km=HISTORY_GRID_QA_LIMIT_KM,
             log_label=f"{log_label} {fetch_start}/{fetch_end}",
         )
@@ -4690,14 +5051,23 @@ def run_gfs(config: dict, client: ApiClient, generated_at: str, data_date: str) 
             endpoint=OPEN_METEO_ENDPOINTS["gfs"],
             model="NCEP GFS Global 0.11°",
             params=base_weather_params(point, forecast_days=16),
-            variables=HRES_VARIABLES,
-            required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
+            variables=GFS_VARIABLES,
+            required_variables=GFS_REQUIRED_VARIABLES,
+            optional_variables=GFS_OPTIONAL_VARIABLES,
             grid_limit_km=19.5,
             log_label=f"{point_id}:GFS",
             precision_module="gfs",
             max_forecast_date=point_forecast_end_date(point),
         )
     values = list(records.values())
+    variable_status = aggregate_variable_status(
+        [record.get("variable_status") or {} for record in values]
+    )
+    unavailable = unavailable_variables_for(
+        variable_status,
+        required_variables=GFS_REQUIRED_VARIABLES,
+        optional_variables=GFS_OPTIONAL_VARIABLES,
+    )
     return module_header(
         "gfs",
         generated_at,
@@ -4708,6 +5078,11 @@ def run_gfs(config: dict, client: ApiClient, generated_at: str, data_date: str) 
         native_resolution="0.11° (~13 km)",
         precision_policy=PRECISION_POLICIES["gfs"],
         interpolation_note="Open-Meteo documents GFS as hourly, with 3-hourly native data interpolated after 120 h.",
+        requested_variables=list(GFS_VARIABLES),
+        required_variables=list(GFS_REQUIRED_VARIABLES),
+        optional_variables=list(GFS_OPTIONAL_VARIABLES),
+        variable_status=variable_status,
+        **unavailable,
         points=records,
         excluded_points=excluded_points(config),
         successful_points=sum(record.get("status") == "PASS" for record in values),
@@ -4985,7 +5360,7 @@ def ensemble_daily_distributions(hourly: dict) -> dict:
     for index, value in enumerate(times):
         groups.setdefault(parse_local_api_time(value).date().isoformat(), []).append(index)
     temperature_keys = ensemble_series_keys(hourly, "temperature_2m")
-    output = {"night_min": [], "daily_mean": []}
+    output = {"night_min": [], "daily_mean": [], "variables": [], "probabilities": []}
     for day, indices in sorted(groups.items()):
         night_indices = [index for index in indices if parse_local_api_time(times[index]).hour <= 6 or parse_local_api_time(times[index]).hour >= 20]
         night_values = []
@@ -5010,34 +5385,72 @@ def ensemble_daily_distributions(hourly: dict) -> dict:
             }
         output["night_min"].append({"date": day, "statistics_c": night_stats, "thresholds": thresholds})
         output["daily_mean"].append({"date": day, "statistics_c": daily_stats})
+        member_values = []
+        for key in temperature_keys:
+            item = _gefs_member_aggregate(hourly, key[len("temperature_2m"):], indices)
+            if item:
+                member_values.append(item)
+        members_valid = len(temperature_keys)
+        output["variables"].append({
+            "date": day,
+            "members_valid": members_valid,
+            "statistics": _gefs_distribution_summary(member_values, members_valid),
+        })
+        output["probabilities"].append({
+            "date": day,
+            "members_valid": members_valid,
+            "probabilities": (_gefs_distribution_summary(member_values, members_valid) or {}).get("probabilities", {}),
+        })
     return output
 
 
 def validate_ensemble_members(record: dict) -> tuple[bool, dict]:
+    """Validate the 51-series ECMWF ensemble with an explicit required/optional split.
+
+    An unavailable optional variable is reported, never substituted, and never
+    allowed to invalidate the whole ECMWF ensemble module.
+    """
     hourly = record.get("hourly") or {}
-    expected = {}
-    missing = []
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    series_by_variable = {}
+    required_missing = []
+    optional_missing = []
     length_mismatch = []
     null_values = []
-    times = hourly.get("time") or []
+    required_length_mismatch = []
+    required_null_values = []
+    required_names = set(EC_ENSEMBLE_REQUIRED_VARIABLES)
     for variable in ENSEMBLE_VARIABLES:
         keys = ensemble_series_keys(hourly, variable)
-        expected[variable] = keys
-        if len(keys) != 51:
-            missing.append(f"{variable}:expected_51_got_{len(keys)}")
+        series_by_variable[variable] = keys
+        required = variable in required_names
+        if len(keys) != EC_ENSEMBLE_TOTAL_MEMBERS:
+            entry = f"{variable}:expected_{EC_ENSEMBLE_TOTAL_MEMBERS}_got_{len(keys)}"
+            (required_missing if required else optional_missing).append(entry)
         for key in keys:
             if len(hourly.get(key, [])) != len(times):
                 length_mismatch.append(key)
+                if required:
+                    required_length_mismatch.append(key)
             if any(value is None for value in hourly.get(key, [])):
                 null_values.append(key)
-    valid = not missing and not length_mismatch and not null_values
+                if required:
+                    required_null_values.append(key)
+    required_issues = required_missing or required_length_mismatch or required_null_values
+    valid = not required_issues
     return valid, {
         "status": "PASS" if valid else "FAIL",
-        "expected_members": 51,
-        "series_by_variable": expected,
-        "missing_or_wrong_count": missing,
+        "expected_members": EC_ENSEMBLE_TOTAL_MEMBERS,
+        "series_by_variable": series_by_variable,
+        "missing_or_wrong_count": required_missing + optional_missing,
+        "required_missing_or_wrong_count": required_missing,
+        "optional_missing_or_wrong_count": optional_missing,
         "array_length_mismatch": length_mismatch,
         "null_data_series": null_values,
+        "required_array_length_mismatch": required_length_mismatch,
+        "required_null_data_series": required_null_values,
+        "required_variables": list(EC_ENSEMBLE_REQUIRED_VARIABLES),
+        "optional_variables": list(EC_ENSEMBLE_OPTIONAL_VARIABLES),
     }
 
 
@@ -5064,7 +5477,8 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
                 forecast_days=ECMWF_ENSEMBLE_FORECAST_DAYS,
             ),
             variables=ENSEMBLE_VARIABLES,
-            required_variables=ENSEMBLE_VARIABLES,
+            required_variables=EC_ENSEMBLE_REQUIRED_VARIABLES,
+            optional_variables=EC_ENSEMBLE_OPTIONAL_VARIABLES,
             grid_limit_km=37.5,
             log_label=f"{core_id}:ENSEMBLE",
             max_forecast_date=point_forecast_end_date(point),
@@ -5082,11 +5496,26 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
                 record["ensemble"] = {
                     "model_id": "ecmwf_ifs025_ensemble",
                     "resolution": "0.25° (~25 km)",
-                    "total_members": 51,
+                    "total_members": EC_ENSEMBLE_TOTAL_MEMBERS,
+                    "requested_variables": list(ENSEMBLE_VARIABLES),
+                    "required_variables": list(EC_ENSEMBLE_REQUIRED_VARIABLES),
+                    "optional_variables": list(EC_ENSEMBLE_OPTIONAL_VARIABLES),
+                    "distribution_variables": list(ENSEMBLE_DISTRIBUTION_VARIABLES),
+                    "variable_status": record.get("variable_status") or {},
+                    "unavailable_variables": record.get("unavailable_variables") or [],
+                    "optional_unavailable_variables": record.get("optional_unavailable_variables") or [],
                     "distributions": ensemble_daily_distributions(record["hourly"]),
                 }
         records[core_id] = record
     values = list(records.values())
+    variable_status = aggregate_variable_status(
+        [(record.get("ensemble") or {}).get("variable_status") or {} for record in values]
+    )
+    unavailable = unavailable_variables_for(
+        variable_status,
+        required_variables=EC_ENSEMBLE_REQUIRED_VARIABLES,
+        optional_variables=EC_ENSEMBLE_OPTIONAL_VARIABLES,
+    )
     return module_header(
         "ensemble",
         generated_at,
@@ -5096,11 +5525,18 @@ def run_ensemble(config: dict, client: ApiClient, generated_at: str, data_date: 
         model="ECMWF IFS 0.25° Ensemble",
         model_id="ecmwf_ifs025_ensemble",
         resolution="0.25° (~25 km)",
-        total_members=51,
+        total_members=EC_ENSEMBLE_TOTAL_MEMBERS,
         requested_forecast_days=ECMWF_ENSEMBLE_FORECAST_DAYS,
+        requested_variables=list(ENSEMBLE_VARIABLES),
+        required_variables=list(EC_ENSEMBLE_REQUIRED_VARIABLES),
+        optional_variables=list(EC_ENSEMBLE_OPTIONAL_VARIABLES),
+        distribution_variables=list(ENSEMBLE_DISTRIBUTION_VARIABLES),
+        variable_status=variable_status,
+        **unavailable,
         notes=[
             "Global 51-member ECMWF IFS ensemble is used for Xinjiang.",
             "Ensemble spread is signal robustness, not village-level temperature precision.",
+            "Wind direction is stored hourly and summarised with member vector means only.",
         ],
         points=records,
         excluded_points=excluded_points(config),
@@ -5125,12 +5561,33 @@ def _gefs_value_key(variable: str, suffix: str) -> str:
     return f"{variable}{suffix}"
 
 
-def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
-    """Validate GEFS members with an explicit required/optional boundary."""
+def _gefs_member_check(
+    hourly: dict,
+    *,
+    variables=None,
+    required_variables=None,
+    optional_variables=None,
+    expected_members: int | None = None,
+) -> tuple[bool, dict]:
+    """Validate ensemble members with an explicit required/optional boundary.
+
+    Shared by the independent GEFS chain and the ECMWF ensemble so both model
+    families report member availability the same way.  Defaults describe GEFS.
+    """
+    variables = list(variables if variables is not None else GEFS_CORE_VARIABLES)
+    required_variables = tuple(
+        required_variables if required_variables is not None else GEFS_REQUIRED_VARIABLES
+    )
+    optional_variables = tuple(
+        optional_variables if optional_variables is not None else GEFS_OPTIONAL_VARIABLES
+    )
+    expected_members = (
+        expected_members if expected_members is not None else GEFS_ENSEMBLE_MEMBERS
+    )
     times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
     variable_counts = {
         variable: len(_gefs_member_suffixes(hourly, variable))
-        for variable in GEFS_CORE_VARIABLES
+        for variable in variables
     }
     present_variables = [variable for variable, count in variable_counts.items() if count]
     candidate_suffixes = set(_gefs_member_suffixes(hourly, "temperature_2m"))
@@ -5158,19 +5615,19 @@ def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
                 partial_data_series.append(_gefs_value_key(variable, suffix))
             valid_suffixes.append(suffix)
         valid_by_variable[variable] = valid_suffixes
-    required_names = set(GEFS_REQUIRED_VARIABLES)
-    optional_names = set(GEFS_OPTIONAL_VARIABLES)
+    required_names = set(required_variables)
+    optional_names = set(optional_variables)
     unavailable_variables = [
         variable for variable in present_variables
         if not valid_by_variable.get(variable)
     ]
     required_missing_variables = sorted(
-        variable for variable in GEFS_REQUIRED_VARIABLES
+        variable for variable in required_variables
         if variable_counts.get(variable, 0) == 0 or not valid_by_variable.get(variable)
     )
     optional_missing_variables = sorted(
-        variable for variable in GEFS_OPTIONAL_VARIABLES
-        if variable in GEFS_CORE_VARIABLES
+        variable for variable in optional_variables
+        if variable in variables
         and (variable_counts.get(variable, 0) == 0 or not valid_by_variable.get(variable))
     )
     required_array_length_mismatch = sorted(
@@ -5201,7 +5658,7 @@ def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
     # Required variables that are missing are excluded from the intersection
     # but remain visible in required_missing_variables and force PARTIAL.
     available_required = [
-        variable for variable in GEFS_REQUIRED_VARIABLES
+        variable for variable in required_variables
         if valid_by_variable.get(variable)
     ]
     common_suffixes = set(candidate_suffixes)
@@ -5222,7 +5679,7 @@ def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
     member_check_status = "PASS" if (
         bool(times)
         and temperature_available
-        and len(ordered_suffixes) == GEFS_ENSEMBLE_MEMBERS
+        and len(ordered_suffixes) == expected_members
         and not required_missing_variables
         and not required_quality_issues
     ) else "PARTIAL" if bool(times) and temperature_available and ordered_suffixes else "FAIL"
@@ -5230,7 +5687,7 @@ def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
     missing_variables = sorted(set(required_missing_variables) | set(optional_missing_variables))
     return valid, {
         "status": member_check_status,
-        "expected_members": GEFS_ENSEMBLE_MEMBERS,
+        "expected_members": expected_members,
         "members_valid": len(ordered_suffixes),
         "member_suffixes": ordered_suffixes,
         "member_ids": [_gefs_member_id(suffix) for suffix in ordered_suffixes],
@@ -5250,6 +5707,17 @@ def _gefs_member_check(hourly: dict) -> tuple[bool, dict]:
         "optional_partial_data_series": optional_partial_data_series,
         "valid_series_by_variable": valid_by_variable,
     }
+
+
+def _ec_ensemble_member_check(hourly: dict) -> tuple[bool, dict]:
+    """Member check for the 51-series ECMWF ensemble using the unified variable set."""
+    return _gefs_member_check(
+        hourly,
+        variables=ENSEMBLE_VARIABLES,
+        required_variables=EC_ENSEMBLE_REQUIRED_VARIABLES,
+        optional_variables=EC_ENSEMBLE_OPTIONAL_VARIABLES,
+        expected_members=EC_ENSEMBLE_TOTAL_MEMBERS,
+    )
 
 
 def _gefs_time_groups(times: list[str], cutoff_date: dt.date) -> dict[str, list[int]]:
@@ -5277,24 +5745,37 @@ def _gefs_member_aggregate(
     if not temperatures:
         return None
     precipitation = values("precipitation")
+    rain = values("rain")
     snowfall = values("snowfall")
     clouds = values("cloud_cover")
     low_clouds = values("cloud_cover_low")
-    wind = values("wind_speed_10m")
-    gusts = values("wind_gusts_10m")
+    mid_clouds = values("cloud_cover_mid")
+    high_clouds = values("cloud_cover_high")
+    dew_point = values("dew_point_2m")
     humidity = values("relative_humidity_2m")
+    wind = values("wind_speed_10m")
+    wind_direction = values("wind_direction_10m")
+    gusts = values("wind_gusts_10m")
     solar = values(solar_variable) if solar_variable else []
     result = {
         "temperature_mean_c": round(mean(temperatures), 3),
         "temperature_min_c": round(min(temperatures), 3),
         "temperature_max_c": round(max(temperatures), 3),
+        "dew_point_c": round(mean(dew_point), 3) if dew_point else None,
+        "relative_humidity_pct": round(mean(humidity), 3) if humidity else None,
         "precipitation_mm": round(sum(precipitation), 3) if precipitation else None,
+        "rain_mm": round(sum(rain), 3) if rain else None,
         "snowfall_cm": round(sum(snowfall), 3) if snowfall else None,
         "cloud_cover_pct": round(mean(clouds), 3) if clouds else None,
         "cloud_cover_low_pct": round(mean(low_clouds), 3) if low_clouds else None,
+        "cloud_cover_mid_pct": round(mean(mid_clouds), 3) if mid_clouds else None,
+        "cloud_cover_high_pct": round(mean(high_clouds), 3) if high_clouds else None,
         "wind_speed_kmh": round(mean(wind), 3) if wind else None,
+        # Wind direction is circular: report the vector mean plus its resultant
+        # length so a degenerate, direction-less sample is visible as such.
+        "wind_direction_deg": circular_mean_degrees(wind_direction),
+        "wind_direction_resultant_length": circular_resultant_length(wind_direction),
         "wind_gust_kmh": round(max(gusts), 3) if gusts else None,
-        "relative_humidity_pct": round(mean(humidity), 3) if humidity else None,
     }
     if solar:
         result["solar_value"] = round(sum(solar), 3) if solar_variable == "sunshine_duration" else round(mean(solar), 3)
@@ -5333,10 +5814,15 @@ def _gefs_distribution_summary(member_values: list[dict], members_valid: int) ->
     temperature_mean = metric("temperature_mean_c")
     temperature_min = metric("temperature_min_c")
     temperature_max = metric("temperature_max_c")
+    dew_point = metric("dew_point_c")
+    humidity = metric("relative_humidity_pct")
     precipitation = metric("precipitation_mm")
+    rain = metric("rain_mm")
     snowfall = metric("snowfall_cm")
     clouds = metric("cloud_cover_pct")
     low_clouds = metric("cloud_cover_low_pct")
+    mid_clouds = metric("cloud_cover_mid_pct")
+    high_clouds = metric("cloud_cover_high_pct")
     gusts = metric("wind_gust_kmh")
     wind = metric("wind_speed_kmh")
     solar = metric("solar_value")
@@ -5344,29 +5830,60 @@ def _gefs_distribution_summary(member_values: list[dict], members_valid: int) ->
         "temperature_2m": _gefs_distribution(temperature_mean, members_valid),
         "temperature_2m_min": _gefs_distribution(temperature_min, members_valid),
         "temperature_2m_max": _gefs_distribution(temperature_max, members_valid),
+        "dew_point_2m": _gefs_distribution(dew_point, members_valid),
+        "relative_humidity_2m": _gefs_distribution(humidity, members_valid),
         "cloud_cover": _gefs_distribution(clouds, members_valid),
         "cloud_cover_low": _gefs_distribution(low_clouds, members_valid),
+        "cloud_cover_mid": _gefs_distribution(mid_clouds, members_valid),
+        "cloud_cover_high": _gefs_distribution(high_clouds, members_valid),
         "precipitation": _gefs_distribution(precipitation, members_valid),
+        "rain": _gefs_distribution(rain, members_valid),
         "snowfall": _gefs_distribution(snowfall, members_valid),
         "wind_speed_10m": _gefs_distribution(wind, members_valid),
         "wind_gusts_10m": _gefs_distribution(gusts, members_valid),
+        # Wind direction is deliberately absent: a circular quantity is not
+        # summarised with arithmetic percentiles.  Its member vector means are
+        # reported per window in ``wind_direction`` instead.
+        "wind_direction": {
+            "member_vector_means_deg": [
+                item["wind_direction_deg"]
+                for item in member_values
+                if item.get("wind_direction_deg") is not None
+            ],
+            "available_members": len([
+                item for item in member_values if item.get("wind_direction_deg") is not None
+            ]),
+            "members_valid": members_valid,
+            "circular_averaging": True,
+        },
         "probabilities": {
+            "precipitation_gt_0_1mm": _gefs_probability(precipitation, lambda value: value > 0.1, members_valid),
             "precipitation_gt_0_5mm": _gefs_probability(precipitation, lambda value: value > 0.5, members_valid),
             "precipitation_gt_2mm": _gefs_probability(precipitation, lambda value: value > 2, members_valid),
             "precipitation_gt_5mm": _gefs_probability(precipitation, lambda value: value > 5, members_valid),
+            "rain_gt_0_1mm": _gefs_probability(rain, lambda value: value > 0.1, members_valid),
+            "snowfall_gt_0cm": _gefs_probability(snowfall, lambda value: value > 0, members_valid),
             "snowfall_gt_0_5cm": _gefs_probability(snowfall, lambda value: value > 0.5, members_valid),
             "snowfall_gt_1cm": _gefs_probability(snowfall, lambda value: value > 1, members_valid),
+            "snowfall_gt_2cm": _gefs_probability(snowfall, lambda value: value > 2, members_valid),
             "snowfall_gt_3cm": _gefs_probability(snowfall, lambda value: value > 3, members_valid),
             "snowfall_gt_5cm": _gefs_probability(snowfall, lambda value: value > 5, members_valid),
             "gust_gt_30kmh": _gefs_probability(gusts, lambda value: value > 30, members_valid),
             "gust_gt_40kmh": _gefs_probability(gusts, lambda value: value > 40, members_valid),
             "gust_gt_50kmh": _gefs_probability(gusts, lambda value: value > 50, members_valid),
+            "gust_gt_60kmh": _gefs_probability(gusts, lambda value: value > 60, members_valid),
             "cloud_cover_gt_50pct": _gefs_probability(clouds, lambda value: value > 50, members_valid),
             "cloud_cover_gt_70pct": _gefs_probability(clouds, lambda value: value > 70, members_valid),
             "cloud_cover_gt_90pct": _gefs_probability(clouds, lambda value: value > 90, members_valid),
             "cloud_cover_low_gt_30pct": _gefs_probability(low_clouds, lambda value: value > 30, members_valid),
             "cloud_cover_low_gt_50pct": _gefs_probability(low_clouds, lambda value: value > 50, members_valid),
             "cloud_cover_low_gt_70pct": _gefs_probability(low_clouds, lambda value: value > 70, members_valid),
+            "cloud_cover_mid_gt_30pct": _gefs_probability(mid_clouds, lambda value: value > 30, members_valid),
+            "cloud_cover_mid_gt_50pct": _gefs_probability(mid_clouds, lambda value: value > 50, members_valid),
+            "cloud_cover_mid_gt_70pct": _gefs_probability(mid_clouds, lambda value: value > 70, members_valid),
+            "cloud_cover_high_gt_30pct": _gefs_probability(high_clouds, lambda value: value > 30, members_valid),
+            "cloud_cover_high_gt_50pct": _gefs_probability(high_clouds, lambda value: value > 50, members_valid),
+            "cloud_cover_high_gt_70pct": _gefs_probability(high_clouds, lambda value: value > 70, members_valid),
             "temperature_lt_0c": _gefs_probability(temperature_min, lambda value: value < 0, members_valid),
             "temperature_lt_minus5c": _gefs_probability(temperature_min, lambda value: value < -5, members_valid),
             "daily_tmax_lt_0c": _gefs_probability(temperature_max, lambda value: value < 0, members_valid),
@@ -5670,6 +6187,28 @@ def _build_gefs_segment(record: dict, segment_key: str, model_id: str, model: st
     )
     missing_variables = sorted(set(required_missing_variables) | set(optional_missing_variables))
     segment_status = "FAILED" if not member_valid else "OK" if member_check.get("status") == "PASS" and not required_missing_variables else "PARTIAL"
+    raw_availability = variable_availability(hourly, GEFS_CORE_VARIABLES)
+    variable_status = variable_status_classification(
+        raw_availability,
+        required_variables=GEFS_REQUIRED_VARIABLES,
+        optional_variables=GEFS_OPTIONAL_VARIABLES,
+    )
+    for variable in optional_missing_variables:
+        if variable not in variable_status:
+            variable_status[variable] = VARIABLE_STATUS_OPTIONAL_UNAVAILABLE
+        elif variable_status[variable] == VARIABLE_STATUS_OK:
+            variable_status[variable] = VARIABLE_STATUS_PARTIAL
+    # Recompute after the capability probe has been folded in, so the published
+    # unavailable lists and variable_status never contradict each other.
+    unavailable = unavailable_variables_for(
+        variable_status,
+        required_variables=GEFS_REQUIRED_VARIABLES,
+        optional_variables=GEFS_OPTIONAL_VARIABLES,
+    )
+    cloud_layer_status = {
+        variable: variable_status.get(variable, VARIABLE_STATUS_MISSING)
+        for variable in CLOUD_LAYER_VARIABLES
+    }
     return {
         "status": segment_status,
         "segment": segment_key,
@@ -5688,6 +6227,15 @@ def _build_gefs_segment(record: dict, segment_key: str, model_id: str, model: st
         "missing_variables": missing_variables,
         "required_missing_variables": required_missing_variables,
         "optional_missing_variables": optional_missing_variables,
+        "requested_variables": list(GEFS_CORE_VARIABLES),
+        "required_variables": list(GEFS_REQUIRED_VARIABLES),
+        "optional_variables": list(GEFS_OPTIONAL_VARIABLES),
+        "variable_status": variable_status,
+        # Layered cloud is requested but not derived: when Open-Meteo GEFS
+        # returns null arrays for Xinjiang the layers stay explicitly
+        # unavailable instead of being inferred from the total cloud cover.
+        "cloud_layer_status": cloud_layer_status,
+        **unavailable,
         "daily": daily_public,
         "windows": window_public,
         "event_phases": phase,
@@ -5754,6 +6302,16 @@ def _write_gefs_cache(point: dict, model_id: str, variables: list[str], record: 
     })
 
 
+def _record_has_usable_series(record: dict, variable: str) -> bool:
+    """True when the primary response already carries usable values for a variable."""
+    hourly = record.get("hourly") or {}
+    values = hourly.get(variable)
+    times = hourly.get("time")
+    if not isinstance(values, list) or not isinstance(times, list) or len(values) != len(times):
+        return False
+    return any(value is not None for value in values)
+
+
 def _fetch_gefs_optional_solar(
     client: ApiClient,
     record: dict,
@@ -5774,7 +6332,7 @@ def _fetch_gefs_optional_solar(
                 f"{label}:{variable}",
             )
         except OpenMeteoError as error:
-            missing.extend(GEFS_OPTIONAL_SOLAR_VARIABLES)
+            missing.extend(_solar_variables_still_missing(record))
             warnings.append(f"{variable}:{error.reason}")
             break
         hourly = payload.get("hourly") if isinstance(payload.get("hourly"), dict) else {}
@@ -5791,7 +6349,7 @@ def _fetch_gefs_optional_solar(
             or len(values) != len(record.get("hourly", {}).get("time", []))
             or any(value is None for value in values)
         ):
-            missing.extend(GEFS_OPTIONAL_SOLAR_VARIABLES)
+            missing.extend(_solar_variables_still_missing(record))
             warnings.append(f"{variable}:OPTIONAL_VARIABLE_QA_FAIL")
             break
         record.setdefault("hourly", {})[variable] = values
@@ -5800,6 +6358,51 @@ def _fetch_gefs_optional_solar(
         break
     record["gefs_missing_variables"] = sorted(set(record.get("gefs_missing_variables", [])) | set(missing))
     record.setdefault("qa", {}).setdefault("warnings", []).extend(warnings)
+
+
+def _solar_variables_still_missing(record: dict) -> list[str]:
+    """Solar alternatives the primary response did not already deliver.
+
+    The probe only tests one alternative, so a failure must not mark a solar
+    variable that the unified request already returned with usable values.
+    """
+    return [
+        variable
+        for variable in GEFS_OPTIONAL_SOLAR_VARIABLES
+        if not _record_has_usable_series(record, variable)
+    ]
+
+
+def _gefs_solar_available(record: dict) -> bool:
+    """True when the main GEFS request already returned a usable solar series."""
+    return _record_has_usable_series(record, "sunshine_duration")
+
+
+def classify_record_variable_status(
+    record: dict,
+    *,
+    required_variables,
+    optional_variables,
+) -> dict:
+    """Publish the module-level required/optional view of one fetched record."""
+    availability = record.get("raw_variable_availability")
+    if not isinstance(availability, dict) or not availability:
+        availability = variable_availability(record.get("hourly") or {}, record.get("requested_variables") or [])
+        record["raw_variable_availability"] = availability
+    status = variable_status_classification(
+        availability,
+        required_variables=required_variables,
+        optional_variables=optional_variables,
+    )
+    record["variable_status"] = status
+    record.update(
+        unavailable_variables_for(
+            status,
+            required_variables=required_variables,
+            optional_variables=optional_variables,
+        )
+    )
+    return status
 
 
 def _fetch_gefs_segment(
@@ -5827,6 +6430,7 @@ def _fetch_gefs_segment(
         params=params,
         variables=GEFS_CORE_VARIABLES,
         required_variables=["temperature_2m"],
+        optional_variables=GEFS_OPTIONAL_VARIABLES,
         grid_limit_km=GEFS_GRID_QA_LIMITS_KM[segment_key],
         log_label=f"{point['id']}:GEFS_{segment_key.upper()}",
         accepted_model_values=(model_id, model),
@@ -5850,12 +6454,29 @@ def _fetch_gefs_segment(
                 solar_capabilities[model_id] = bool(record.get("solar_variable"))
         else:
             record["gefs_missing_variables"] = sorted(
-                set(record.get("gefs_missing_variables", [])) | set(GEFS_OPTIONAL_SOLAR_VARIABLES)
+                set(record.get("gefs_missing_variables", []))
+                | set(_solar_variables_still_missing(record))
             )
+        # The unified GEFS request already asks for sunshine_duration, so a
+        # usable series in the primary response is authoritative even when the
+        # standalone capability probe was inconclusive.
+        if not record.get("solar_variable") and _gefs_solar_available(record):
+            record["solar_variable"] = "sunshine_duration"
+        classify_record_variable_status(
+            record,
+            required_variables=GEFS_REQUIRED_VARIABLES,
+            optional_variables=GEFS_OPTIONAL_VARIABLES,
+        )
         _write_gefs_cache(point, model_id, GEFS_CORE_VARIABLES, record, cache_dir)
     record.setdefault("gefs_missing_variables", [])
     record.setdefault("gefs_segment", segment_key)
     record.setdefault("gefs_model_id", model_id)
+    if record.get("status") == "PASS" and (used_cache or "variable_status" not in record):
+        classify_record_variable_status(
+            record,
+            required_variables=GEFS_REQUIRED_VARIABLES,
+            optional_variables=GEFS_OPTIONAL_VARIABLES,
+        )
     return record
 
 
@@ -5965,6 +6586,20 @@ def run_gefs(
                 for value in segment_public.values()
                 for variable in (value.get("optional_missing_variables") or [])
             }),
+            "variable_status": aggregate_variable_status([
+                value.get("variable_status") or {} for value in segment_public.values()
+            ]),
+            "cloud_layer_status": {
+                variable: next(
+                    (
+                        (value.get("cloud_layer_status") or {}).get(variable)
+                        for value in segment_public.values()
+                        if (value.get("cloud_layer_status") or {}).get(variable)
+                    ),
+                    None,
+                )
+                for variable in CLOUD_LAYER_VARIABLES
+            },
             "stale": any(value.get("stale") for value in segment_public.values()),
         }
         public_points[point_id] = {
@@ -6026,6 +6661,29 @@ def run_gefs(
         coverage_end=min(max(coverage_ends), cutoff_date.isoformat()) if coverage_ends else None,
         forecast_cutoff_date=cutoff_date.isoformat(),
         missing_variables=sorted(missing_variables),
+        requested_variables=list(GEFS_CORE_VARIABLES),
+        required_variables=list(GEFS_REQUIRED_VARIABLES),
+        optional_variables=list(GEFS_OPTIONAL_VARIABLES),
+        variable_status=aggregate_variable_status([
+            (point.get("near_range") or {}).get("variable_status") or {}
+            for point in public_points.values()
+        ] + [
+            (point.get("long_range") or {}).get("variable_status") or {}
+            for point in public_points.values()
+        ]),
+        cloud_layer_status={
+            variable: next(
+                (
+                    ((point.get("near_range") or {}).get("cloud_layer_status") or {}).get(variable)
+                    or ((point.get("long_range") or {}).get("cloud_layer_status") or {}).get(variable)
+                    for point in public_points.values()
+                    if ((point.get("near_range") or {}).get("cloud_layer_status") or {}).get(variable)
+                    or ((point.get("long_range") or {}).get("cloud_layer_status") or {}).get(variable)
+                ),
+                None,
+            )
+            for variable in CLOUD_LAYER_VARIABLES
+        },
         qa_warnings=sorted(set(qa_warnings)),
         stale=stale,
         cache={
@@ -7060,7 +7718,7 @@ def target_values(record: dict, target_time: str) -> dict:
     except ValueError:
         return {"status": "INVALID", "reason": "TARGET_TIME_NOT_IN_RUN"}
     values = {}
-    for variable in HRES_VARIABLES:
+    for variable in SINGLE_RUN_VARIABLES:
         actual_variable = record.get("solar_variable") if variable == "sunshine_duration" else variable
         if not actual_variable:
             continue
@@ -7101,8 +7759,8 @@ def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_dat
                 endpoint=OPEN_METEO_ENDPOINTS["single_runs"],
                 model="ECMWF IFS HRES 9 km",
                 params=base_weather_params(point, models="ecmwf_ifs", run=run_param, forecast_days=10),
-                variables=HRES_VARIABLES,
-                required_variables=[value for value in HRES_VARIABLES if value != "sunshine_duration"],
+                variables=SINGLE_RUN_VARIABLES,
+                required_variables=SINGLE_RUN_REQUIRED_VARIABLES,
                 grid_limit_km=HRES_GRID_QA_LIMIT_KM,
                 log_label=f"{core_id}:SINGLE_RUN {run_param}",
                 precision_module="single_runs",
@@ -8083,12 +8741,18 @@ def _deterministic_hourly_window(record: dict | None, target_date: dt.date, wind
         return _values_for_indices(hourly, variable, indices)
 
     temperatures = values("temperature_2m")
+    dew_point = values("dew_point_2m")
+    humidity = values("relative_humidity_2m")
     clouds = values("cloud_cover")
     low_clouds = values("cloud_cover_low")
+    mid_clouds = values("cloud_cover_mid")
+    high_clouds = values("cloud_cover_high")
     precipitation = values("precipitation")
+    rain = values("rain")
     snowfall = values("snowfall")
     gusts = values("wind_gusts_10m")
     wind = values("wind_speed_10m")
+    wind_direction = values("wind_direction_10m")
     solar_variable = record.get("solar_variable")
     solar = values(solar_variable) if solar_variable else []
     result = {
@@ -8098,13 +8762,20 @@ def _deterministic_hourly_window(record: dict | None, target_date: dt.date, wind
         "hours_included": len(indices),
         "total_cloud_pct": round(mean(clouds), 3) if clouds else None,
         "low_cloud_pct": round(mean(low_clouds), 3) if low_clouds else None,
+        "mid_cloud_pct": round(mean(mid_clouds), 3) if mid_clouds else None,
+        "high_cloud_pct": round(mean(high_clouds), 3) if high_clouds else None,
         "precipitation_mm": round(sum(precipitation), 3) if precipitation else None,
+        "rain_mm": round(sum(rain), 3) if rain else None,
         "snowfall_cm": round(sum(snowfall), 3) if snowfall else None,
         "temperature_mean_c": round(mean(temperatures), 3) if temperatures else None,
         "temperature_min_c": round(min(temperatures), 3) if temperatures else None,
         "temperature_max_c": round(max(temperatures), 3) if temperatures else None,
+        "dew_point_mean_c": round(mean(dew_point), 3) if dew_point else None,
+        "relative_humidity_mean_pct": round(mean(humidity), 3) if humidity else None,
         "gust_max_kmh": round(max(gusts), 3) if gusts else None,
         "wind_speed_mean_kmh": round(mean(wind), 3) if wind else None,
+        "wind_direction_mean_deg": circular_mean_degrees(wind_direction),
+        "wind_direction_resultant_length": circular_resultant_length(wind_direction),
         "sunshine_or_shortwave": (
             {"variable": solar_variable, "value": round(sum(solar), 3)}
             if solar and solar_variable == "sunshine_duration"
@@ -8130,13 +8801,21 @@ def _deterministic_daily_summary(record: dict | None, target_date: dt.date, cuto
         "date": date_key,
         "total_cloud_pct": item.get("cloud_cover_mean_pct"),
         "low_cloud_pct": item.get("cloud_cover_low_mean_pct"),
+        "mid_cloud_pct": item.get("cloud_cover_mid_mean_pct"),
+        "high_cloud_pct": item.get("cloud_cover_high_mean_pct"),
         "precipitation_mm": item.get("precipitation_mm"),
+        "rain_mm": item.get("rain_mm"),
         "snowfall_cm": item.get("snowfall_cm"),
         "temperature_mean_c": item.get("temperature_mean_c"),
         "temperature_min_c": item.get("temperature_min_c"),
         "temperature_max_c": item.get("temperature_max_c"),
+        "dew_point_mean_c": item.get("dew_point_mean_c"),
+        "relative_humidity_mean_pct": item.get("relative_humidity_mean_pct"),
         "gust_max_kmh": item.get("wind_gust_max_kmh"),
+        "gust_mean_kmh": item.get("wind_gust_mean_kmh"),
         "wind_speed_mean_kmh": item.get("wind_speed_mean_kmh"),
+        "wind_direction_mean_deg": item.get("wind_direction_mean_deg"),
+        "wind_direction_resultant_length": item.get("wind_direction_member_resultant_length"),
         "sunshine_or_shortwave": item.get("solar_metric"),
     }
 
@@ -8149,21 +8828,31 @@ def _ensemble_window_view(record: dict | None, target_date: dt.date, window: str
     indices = _gefs_window_indices(times, target_date, window, cutoff_date)
     if not indices:
         return {"status": "UNAVAILABLE", "reason": "OUTSIDE_ECMWF_ENSEMBLE_HORIZON"}
-    valid, check = _gefs_member_check({"time": times, **hourly})
+    valid, check = _ec_ensemble_member_check({"time": times, **hourly})
     suffixes = check.get("member_suffixes", []) if valid else []
+    solar_variable = record.get("solar_variable")
+    if solar_variable not in UNIFIED_SOLAR_VARIABLES:
+        solar_variable = "sunshine_duration" if "sunshine_duration" in hourly else None
     values = []
     for suffix in suffixes:
-        item = _gefs_member_aggregate(hourly, suffix, indices)
+        item = _gefs_member_aggregate(hourly, suffix, indices, solar_variable)
         if item:
             values.append(item)
     if not values:
         return {"status": "UNAVAILABLE", "reason": "ECMWF_ENSEMBLE_WINDOW_MISSING"}
     result = _gefs_distribution_summary(values, len(suffixes))
+    meta = record.get("ensemble") or {}
     return {
         "status": "OK" if check.get("status") == "PASS" else "PARTIAL",
         "window": window,
         "date": target_date.isoformat(),
+        "model_id": meta.get("model_id", "ecmwf_ifs025_ensemble"),
+        "resolution": meta.get("resolution"),
         "members_valid": len(suffixes),
+        "expected_members": EC_ENSEMBLE_TOTAL_MEMBERS,
+        "member_check_status": check.get("status"),
+        "optional_unavailable_variables": check.get("optional_missing_variables", []),
+        "required_unavailable_variables": check.get("required_missing_variables", []),
         "statistics": result,
     }
 
@@ -8241,13 +8930,24 @@ def _deterministic_support(
 
 
 def _deterministic_consistency(gfs_window: dict, gefs_window: dict) -> dict:
+    """Compare one deterministic window against one ensemble window.
+
+    Generic over the model pair: the same routine answers
+    HRES-vs-EC-ensemble, GFS-vs-GEFS and HRES-vs-GEFS.  A layer that the
+    ensemble cannot provide stays UNAVAILABLE instead of being replaced by the
+    total cloud cover.
+    """
     if gfs_window.get("status") != "OK" or gefs_window.get("status") not in {"OK", "PARTIAL"}:
         return {
             "cloud_cover": "UNAVAILABLE",
             "low_cloud": "UNAVAILABLE",
+            "mid_cloud": "UNAVAILABLE",
+            "high_cloud": "UNAVAILABLE",
             "temperature": "UNAVAILABLE",
             "snowfall": "UNAVAILABLE",
             "precipitation": "UNAVAILABLE",
+            "wind": "UNAVAILABLE",
+            "gust": "UNAVAILABLE",
             "event_phase": "UNAVAILABLE",
             "deterministic_outlier": False,
         }
@@ -8255,9 +8955,15 @@ def _deterministic_consistency(gfs_window: dict, gefs_window: dict) -> dict:
     classifications = {
         "cloud_cover": _distribution_classification(gfs_window.get("total_cloud_pct"), (stats.get("cloud_cover") or {})),
         "low_cloud": _distribution_classification(gfs_window.get("low_cloud_pct"), (stats.get("cloud_cover_low") or {})),
+        "mid_cloud": _distribution_classification(gfs_window.get("mid_cloud_pct"), (stats.get("cloud_cover_mid") or {})),
+        "high_cloud": _distribution_classification(gfs_window.get("high_cloud_pct"), (stats.get("cloud_cover_high") or {})),
         "temperature": _distribution_classification(gfs_window.get("temperature_mean_c"), (stats.get("temperature_2m") or {})),
         "snowfall": _distribution_classification(gfs_window.get("snowfall_cm"), (stats.get("snowfall") or {})),
         "precipitation": _distribution_classification(gfs_window.get("precipitation_mm"), (stats.get("precipitation") or {})),
+        "wind": _distribution_classification(gfs_window.get("wind_speed_mean_kmh"), (stats.get("wind_speed_10m") or {})),
+        # Gusts are compared against the gust distribution, never against the
+        # sustained wind distribution.
+        "gust": _distribution_classification(gfs_window.get("gust_max_kmh"), (stats.get("wind_gusts_10m") or {})),
     }
     supports = [_deterministic_support(gfs_window, gefs_window, event_type) for event_type in ("CLOUD_EVENT", "PRECIP_EVENT", "SNOW_EVENT")]
     outlier = any(value == "OUTLIER" for value in classifications.values()) or any(value == "OUTLIER" for value in supports)
@@ -8265,6 +8971,140 @@ def _deterministic_consistency(gfs_window: dict, gefs_window: dict) -> dict:
         **classifications,
         "event_phase": "OUTLIER" if any(value == "OUTLIER" for value in supports) else "SUPPORTED" if all(value in {"SUPPORTED", "UNAVAILABLE"} for value in supports) else "WEAK_SUPPORT",
         "deterministic_outlier": outlier,
+    }
+
+
+def _ensemble_probability_consistency(
+    first_window: dict,
+    second_window: dict,
+    *,
+    pair_label: str,
+) -> dict:
+    """Probability-space agreement between two independent ensembles.
+
+    The two ensembles are compared, never averaged.
+    """
+    first_available = first_window.get("status") in {"OK", "PARTIAL"}
+    second_available = second_window.get("status") in {"OK", "PARTIAL"}
+    if not first_available and not second_available:
+        return {"agreement": "UNAVAILABLE", "pair": pair_label, "notes": ["BOTH_ENSEMBLES_UNAVAILABLE"]}
+    if first_available != second_available:
+        return {"agreement": "ONE_ENSEMBLE_ONLY", "pair": pair_label, "notes": ["ONE_ENSEMBLE_ONLY"]}
+    first_stats = first_window.get("statistics") or {}
+    second_stats = second_window.get("statistics") or {}
+
+    def statistic(window_stats: dict, variable: str, field: str):
+        return (window_stats.get(variable) or {}).get(field)
+
+    pairs = [
+        ("temperature_median_c", statistic(first_stats, "temperature_2m", "median"), statistic(second_stats, "temperature_2m", "median"), 5.0, "°C"),
+        ("total_cloud_median_pct", statistic(first_stats, "cloud_cover", "median"), statistic(second_stats, "cloud_cover", "median"), 35.0, "%"),
+        ("low_cloud_median_pct", statistic(first_stats, "cloud_cover_low", "median"), statistic(second_stats, "cloud_cover_low", "median"), 35.0, "%"),
+        ("mid_cloud_median_pct", statistic(first_stats, "cloud_cover_mid", "median"), statistic(second_stats, "cloud_cover_mid", "median"), 35.0, "%"),
+        ("high_cloud_median_pct", statistic(first_stats, "cloud_cover_high", "median"), statistic(second_stats, "cloud_cover_high", "median"), 35.0, "%"),
+        ("dew_point_median_c", statistic(first_stats, "dew_point_2m", "median"), statistic(second_stats, "dew_point_2m", "median"), 4.0, "°C"),
+        ("relative_humidity_median_pct", statistic(first_stats, "relative_humidity_2m", "median"), statistic(second_stats, "relative_humidity_2m", "median"), 25.0, "%"),
+        ("precipitation_median_mm", statistic(first_stats, "precipitation", "median"), statistic(second_stats, "precipitation", "median"), 2.0, "mm"),
+        ("snowfall_median_cm", statistic(first_stats, "snowfall", "median"), statistic(second_stats, "snowfall", "median"), 2.0, "cm"),
+        ("gust_p90_kmh", statistic(first_stats, "wind_gusts_10m", "p90"), statistic(second_stats, "wind_gusts_10m", "p90"), 20.0, "km/h"),
+        ("wind_speed_median_kmh", statistic(first_stats, "wind_speed_10m", "median"), statistic(second_stats, "wind_speed_10m", "median"), 15.0, "km/h"),
+    ]
+    deltas = {}
+    notes = []
+    agreement_points = []
+    for name, first_value, second_value, tolerance, unit in pairs:
+        if first_value is None or second_value is None:
+            deltas[name] = {
+                "comparison": "UNAVAILABLE",
+                "value": None,
+                "unit": unit,
+                "reason": "VARIABLE_UNAVAILABLE_IN_ONE_ENSEMBLE",
+            }
+            continue
+        delta = abs(float(first_value) - float(second_value))
+        label = "HIGH" if delta <= tolerance else "MEDIUM" if delta <= tolerance * 2 else "LOW"
+        agreement_points.append(label)
+        deltas[name] = {"comparison": label, "value": round(delta, 3), "unit": unit, "tolerance": tolerance}
+        if label == "LOW":
+            notes.append(f"{name}:LARGE_DIFFERENCE")
+    if not agreement_points:
+        return {"agreement": "UNAVAILABLE", "pair": pair_label, "variables": deltas, "notes": ["NO_SHARED_VARIABLES"]}
+    worst = "LOW" if "LOW" in agreement_points else "MEDIUM" if "MEDIUM" in agreement_points else "HIGH"
+    return {
+        "agreement": worst,
+        "pair": pair_label,
+        "variables": deltas,
+        "notes": notes,
+        "method": "independent comparison, no cross-model averaging",
+    }
+
+
+def _deterministic_vs_deterministic_consistency(first_window: dict, second_window: dict, *, pair_label: str) -> dict:
+    """Compare two deterministic windows variable by variable. No averaging."""
+    if first_window.get("status") != "OK" or second_window.get("status") != "OK":
+        return {
+            "agreement": "UNAVAILABLE",
+            "pair": pair_label,
+            "variables": {},
+            "notes": ["ONE_DETERMINISTIC_WINDOW_UNAVAILABLE"],
+        }
+    pairs = [
+        # Source keys must match the raw ``_deterministic_hourly_window`` field
+        # names; only the compact view renames the temperature to ``temp_mean_c``.
+        ("temperature_mean_c", "temperature_mean_c", 5.0),
+        ("total_cloud_pct", "total_cloud_pct", 35.0),
+        ("low_cloud_pct", "low_cloud_pct", 35.0),
+        ("mid_cloud_pct", "mid_cloud_pct", 35.0),
+        ("high_cloud_pct", "high_cloud_pct", 35.0),
+        ("precipitation_mm", "precipitation_mm", 2.0),
+        ("snowfall_cm", "snowfall_cm", 2.0),
+        ("wind_speed_mean_kmh", "wind_speed_mean_kmh", 15.0),
+        ("gust_max_kmh", "gust_max_kmh", 20.0),
+    ]
+    results = {}
+    labels = []
+    notes = []
+    for key, source_key, tolerance in pairs:
+        first_value = first_window.get(source_key)
+        second_value = second_window.get(source_key)
+        if first_value is None or second_value is None:
+            results[key] = {"comparison": "UNAVAILABLE", "value": None, "reason": "VARIABLE_UNAVAILABLE_IN_ONE_MODEL"}
+            continue
+        delta = abs(float(first_value) - float(second_value))
+        label = "HIGH" if delta <= tolerance else "MEDIUM" if delta <= tolerance * 2 else "LOW"
+        labels.append(label)
+        results[key] = {"comparison": label, "value": round(delta, 3), "tolerance": tolerance}
+        if label == "LOW":
+            notes.append(f"{key}:LARGE_DIFFERENCE")
+    if not labels:
+        return {"agreement": "UNAVAILABLE", "pair": pair_label, "variables": results, "notes": ["NO_SHARED_VARIABLES"]}
+    worst = "LOW" if "LOW" in labels else "MEDIUM" if "MEDIUM" in labels else "HIGH"
+    return {
+        "agreement": worst,
+        "pair": pair_label,
+        "variables": results,
+        "notes": notes,
+        "method": "independent comparison, no cross-model averaging",
+    }
+
+
+def _model_consistency(
+    hres_window: dict,
+    gfs_window: dict,
+    ec_window: dict,
+    gefs_window: dict,
+) -> dict:
+    """The four model-pair comparisons requested by the unified variable system."""
+    return {
+        "ec_hres_vs_ec_ensemble": _deterministic_consistency(hres_window, ec_window),
+        "gfs_deterministic_vs_gefs": _deterministic_consistency(gfs_window, gefs_window),
+        "ec_hres_vs_gfs_deterministic": _deterministic_vs_deterministic_consistency(
+            hres_window, gfs_window, pair_label="ec_hres_vs_gfs_deterministic"
+        ),
+        "ec_ensemble_vs_gefs": _ensemble_probability_consistency(
+            ec_window, gefs_window, pair_label="ec_ensemble_vs_gefs"
+        ),
+        "averaging_policy": "NO_CROSS_MODEL_AVERAGING",
     }
 
 
@@ -8297,6 +9137,18 @@ def _ensemble_consensus(ec_window: dict, gefs_window: dict) -> dict:
     return {"agreement": agreement, "notes": notes, "max_probability_difference": round(maximum, 3)}
 
 
+def _signal_level(probability: float | None, median: float | None, *, high: float, moderate: float) -> str:
+    if probability is not None and probability >= high:
+        return "HIGH"
+    if probability is not None and probability >= moderate:
+        return "MODERATE"
+    if probability is None:
+        if median is None:
+            return "UNCERTAIN"
+        return "HIGH" if median >= 70 else "MODERATE" if median >= 35 else "LOW"
+    return "LOW"
+
+
 def _viewing_signal(
     gefs_window: dict,
     ec_window: dict,
@@ -8308,39 +9160,116 @@ def _viewing_signal(
     if not gefs_available and not ec_available:
         return {
             "cloud_signal": "UNCERTAIN",
+            "total_cloud_signal": "UNCERTAIN",
             "low_cloud_signal": "UNCERTAIN",
+            "mid_cloud_signal": "UNCERTAIN",
+            "high_cloud_signal": "UNCERTAIN",
             "precip_signal": "UNCERTAIN",
             "snow_signal": "UNCERTAIN",
             "wind_signal": "UNCERTAIN",
+            "visibility_related_signal": "UNCERTAIN",
             "model_agreement": "UNAVAILABLE",
+            "layer_sources": {variable: "UNAVAILABLE" for variable in CLOUD_LAYER_VARIABLES},
+            "notes": ["NO_VIEWING_SOURCE_AVAILABLE"],
         }
-    # Prefer GEFS for the GFS cross-check.  If GEFS is outside its horizon,
-    # ECMWF ensemble can still provide a single-ensemble viewing signal.
-    source_window = gefs_window if gefs_available else ec_window
-    stats = source_window.get("statistics") or {}
-    probabilities = stats.get("probabilities") or {}
-    cloud = probabilities.get("cloud_cover_gt_70pct", {}).get("probability")
-    low = probabilities.get("cloud_cover_low_gt_50pct", {}).get("probability")
-    precip = probabilities.get("precipitation_gt_0_5mm", {}).get("probability")
-    snow = probabilities.get("snowfall_gt_0_5cm", {}).get("probability")
-    gust = probabilities.get("gust_gt_50kmh", {}).get("probability")
-    median_cloud = (stats.get("cloud_cover") or {}).get("median")
-    cloud_signal = "UNCERTAIN" if cloud is None else "CLOUDY" if cloud >= 0.65 or (median_cloud is not None and median_cloud >= 70) else "CLEAR" if cloud <= 0.25 and (median_cloud is None or median_cloud < 35) else "MIXED"
-    low_signal = "UNCERTAIN" if low is None else "HIGH" if low >= 0.5 else "MODERATE" if low >= 0.2 else "LOW"
+    # GEFS is preferred for the GFS cross-check, but a quantity GEFS cannot
+    # supply (the Xinjiang layered-cloud null-array case) is read from the
+    # independent ECMWF ensemble instead of being reported as UNCERTAIN.  The
+    # two ensembles are never averaged and the chosen source is published.
+    gefs_stats = (gefs_window.get("statistics") or {}) if gefs_available else {}
+    ec_stats = (ec_window.get("statistics") or {}) if ec_available else {}
+
+    def probability(name: str) -> float | None:
+        for stats in (gefs_stats, ec_stats):
+            item = (stats.get("probabilities") or {}).get(name)
+            if isinstance(item, dict) and item.get("probability") is not None:
+                return item["probability"]
+        return None
+
+    def median(name: str) -> float | None:
+        for stats in (gefs_stats, ec_stats):
+            item = stats.get(name)
+            if isinstance(item, dict) and item.get("median") is not None:
+                return item["median"]
+        return None
+
+    def source_for(variable: str) -> str:
+        for label, stats in (("gefs", gefs_stats), ("ecmwf_ensemble", ec_stats)):
+            item = stats.get(variable)
+            if isinstance(item, dict) and item.get("median") is not None:
+                return label
+        return "UNAVAILABLE"
+
+    cloud = probability("cloud_cover_gt_70pct")
+    low = probability("cloud_cover_low_gt_50pct")
+    mid = probability("cloud_cover_mid_gt_50pct")
+    high = probability("cloud_cover_high_gt_50pct")
+    precip = probability("precipitation_gt_0_5mm")
+    snow = probability("snowfall_gt_0_5cm")
+    gust = probability("gust_gt_50kmh")
+
+    median_cloud = median("cloud_cover")
+    median_low = median("cloud_cover_low")
+    median_mid = median("cloud_cover_mid")
+    median_high = median("cloud_cover_high")
+    median_humidity = median("relative_humidity_2m")
+
+    cloud_signal = (
+        "UNCERTAIN"
+        if cloud is None and median_cloud is None
+        else "CLOUDY"
+        if (cloud is not None and cloud >= 0.65) or (median_cloud is not None and median_cloud >= 70)
+        else "CLEAR"
+        if (cloud is None or cloud <= 0.25) and (median_cloud is None or median_cloud < 35)
+        else "MIXED"
+    )
+    low_signal = _signal_level(low, median_low, high=0.5, moderate=0.2)
+    mid_signal = _signal_level(mid, median_mid, high=0.5, moderate=0.2)
+    high_signal = _signal_level(high, median_high, high=0.5, moderate=0.2)
     precip_signal = "UNCERTAIN" if precip is None else "HIGH" if precip >= 0.6 else "MODERATE" if precip >= 0.3 else "LOW"
     snow_signal = "UNCERTAIN" if snow is None else "HIGH" if snow >= 0.5 else "MODERATE" if snow >= 0.2 else "LOW"
     wind_signal = "UNCERTAIN" if gust is None else "HIGH" if gust >= 0.5 else "MODERATE" if gust >= 0.25 else "LOW"
+
+    # Obstruction risk only.  No numeric visibility is published because the
+    # Open-Meteo hourly fields used here are not a visibility measurement.
+    obstruction_inputs = [value for value in (low, mid, precip) if value is not None]
+    if not obstruction_inputs and median_low is None and median_humidity is None:
+        visibility_signal = "UNCERTAIN"
+    else:
+        obstruction = max(obstruction_inputs) if obstruction_inputs else 0.0
+        if (median_low is not None and median_low >= 60) or obstruction >= 0.6:
+            visibility_signal = "HIGH"
+        elif (median_low is not None and median_low >= 30) or obstruction >= 0.3:
+            visibility_signal = "MODERATE"
+        else:
+            visibility_signal = "LOW"
     if gefs_available and ec_available:
         agreement = ensemble_agreement or "UNAVAILABLE"
     else:
         agreement = "SINGLE_ENSEMBLE"
+    notes = ["HIGH_CLOUD_IS_NOT_AUTOMATICALLY_BAD_WEATHER"]
+    if low_signal == "HIGH":
+        notes.append("LOW_CLOUD_CAN_BLOCK_TERRAIN_VIEWS")
+    if mid_signal in {"MODERATE", "HIGH"}:
+        notes.append("MID_CLOUD_CAN_FLATTEN_DIRECT_SUNLIGHT")
+    if high_signal in {"MODERATE", "HIGH"}:
+        notes.append("HIGH_CLOUD_ADDS_SKY_TEXTURE_AND_SUNRISE_SUNSET_POTENTIAL")
     return {
         "cloud_signal": cloud_signal,
+        "total_cloud_signal": cloud_signal,
         "low_cloud_signal": low_signal,
+        "mid_cloud_signal": mid_signal,
+        "high_cloud_signal": high_signal,
         "precip_signal": precip_signal,
         "snow_signal": snow_signal,
         "wind_signal": wind_signal,
+        "visibility_related_signal": visibility_signal,
         "model_agreement": agreement,
+        "layer_sources": {
+            variable: source_for(variable)
+            for variable in CLOUD_LAYER_VARIABLES
+        },
+        "notes": notes,
     }
 
 
@@ -8378,13 +9307,20 @@ def _compact_deterministic_view(view: dict) -> dict:
         "status": view.get("status"),
         "cloud": view.get("total_cloud_pct"),
         "low_cloud": view.get("low_cloud_pct"),
+        "mid_cloud": view.get("mid_cloud_pct"),
+        "high_cloud": view.get("high_cloud_pct"),
         "precip_mm": view.get("precipitation_mm"),
+        "rain_mm": view.get("rain_mm"),
         "snow_cm": view.get("snowfall_cm"),
         "gust_kmh": view.get("gust_max_kmh"),
         "wind_speed_kmh": view.get("wind_speed_mean_kmh"),
+        "wind_direction_deg": view.get("wind_direction_mean_deg"),
+        "wind_direction_resultant_length": view.get("wind_direction_resultant_length"),
         "temp_min_c": view.get("temperature_min_c"),
         "temp_mean_c": view.get("temperature_mean_c"),
         "temp_max_c": view.get("temperature_max_c"),
+        "dew_point_c": view.get("dew_point_mean_c"),
+        "relative_humidity_pct": view.get("relative_humidity_mean_pct"),
         "sunshine_or_shortwave": view.get("sunshine_or_shortwave"),
     }
 
@@ -8405,6 +9341,9 @@ def _compact_ensemble_view(view: dict) -> dict:
     def probability(name: str) -> object:
         return (probabilities.get(name) or {}).get("probability")
 
+    def available(name: str) -> bool:
+        return (stats.get(name) or {}).get("available_members", 0) > 0
+
     return {
         "available": True,
         "status": view.get("status"),
@@ -8413,14 +9352,29 @@ def _compact_ensemble_view(view: dict) -> dict:
         "members_valid": view.get("members_valid"),
         "cloud_median": statistic("cloud_cover", "median"),
         "low_cloud_median": statistic("cloud_cover_low", "median"),
+        "mid_cloud_median": statistic("cloud_cover_mid", "median"),
+        "high_cloud_median": statistic("cloud_cover_high", "median"),
+        "p_cloud_gt_50": probability("cloud_cover_gt_50pct"),
         "p_cloud_gt_70": probability("cloud_cover_gt_70pct"),
         "p_low_cloud_gt_50": probability("cloud_cover_low_gt_50pct"),
+        "p_mid_cloud_gt_50": probability("cloud_cover_mid_gt_50pct"),
+        "p_high_cloud_gt_50": probability("cloud_cover_high_gt_50pct"),
         "p_precip": probability("precipitation_gt_0_5mm"),
         "p_snow": probability("snowfall_gt_0_5cm"),
+        "wind_speed_median": statistic("wind_speed_10m", "median"),
+        "gust_median": statistic("wind_gusts_10m", "median"),
         "gust_p90": statistic("wind_gusts_10m", "p90"),
         "temp_p10": statistic("temperature_2m", "p10"),
         "temp_median": statistic("temperature_2m", "median"),
         "temp_p90": statistic("temperature_2m", "p90"),
+        "dew_point_median": statistic("dew_point_2m", "median"),
+        "relative_humidity_median": statistic("relative_humidity_2m", "median"),
+        # Explicit availability so a null median is never confused with a real
+        # value, and so layered cloud cannot be replaced by a total-cloud guess.
+        "layer_availability": {
+            name: available(name)
+            for name in ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high")
+        },
     }
 
 
@@ -8455,6 +9409,167 @@ def _compact_phase(phase: dict | None) -> dict:
     }
 
 
+def _local_index_map(times: list[str]) -> dict[dt.datetime, int]:
+    mapping: dict[dt.datetime, int] = {}
+    for index, value in enumerate(times):
+        try:
+            mapping[parse_local_api_time(value)] = index
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def _hourly_slice(
+    hourly: dict,
+    mapping: dict[dt.datetime, int],
+    variable: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    *,
+    reducer: str = "mean",
+) -> float | None:
+    series = hourly.get(variable)
+    if not isinstance(series, list):
+        return None
+    values = [
+        float(series[index])
+        for moment, index in mapping.items()
+        if start <= moment < end and index < len(series) and series[index] is not None
+    ]
+    if not values:
+        return None
+    if reducer == "sum":
+        return round(sum(values), 3)
+    if reducer == "min":
+        return round(min(values), 3)
+    if reducer == "max":
+        return round(max(values), 3)
+    return round(mean(values), 3)
+
+
+def _fog_inputs(record: dict | None, target_date: dt.date, cutoff_date: dt.date) -> dict:
+    """Raw pre-dawn indicators for the Hemi valley morning-fog question.
+
+    Only observed forecast quantities are published.  No fabricated fog
+    probability is produced; downstream consumers read the signals and the raw
+    metrics themselves.
+    """
+    unavailable = {
+        "status": "UNAVAILABLE",
+        "reason": "DETERMINISTIC_MODULE_UNAVAILABLE",
+        "moisture_signal": "UNCERTAIN",
+        "radiative_cooling_signal": "UNCERTAIN",
+        "wind_signal": "UNCERTAIN",
+        "system_low_cloud_risk": "UNCERTAIN",
+        "probability_published": False,
+    }
+    if not record or record.get("status") != "PASS":
+        return unavailable
+    hourly = record.get("hourly") or {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    mapping = _local_index_map(times)
+    if not mapping:
+        return dict(unavailable, reason="HOURLY_SERIES_EMPTY")
+    morning_end = dt.datetime.combine(target_date, dt.time(8, 0), tzinfo=LOCAL_TZ)
+    night_start = dt.datetime.combine(target_date - dt.timedelta(days=1), dt.time(18, 0), tzinfo=LOCAL_TZ)
+    twelve_start = dt.datetime.combine(target_date - dt.timedelta(days=1), dt.time(20, 0), tzinfo=LOCAL_TZ)
+    twenty_four_start = dt.datetime.combine(target_date - dt.timedelta(days=1), dt.time(8, 0), tzinfo=LOCAL_TZ)
+    pre_dawn_start = dt.datetime.combine(target_date, dt.time(FOG_PRE_DAWN_START_HOUR, 0), tzinfo=LOCAL_TZ)
+    if morning_end.date() > cutoff_date + dt.timedelta(days=1):
+        return dict(unavailable, reason="OUTSIDE_FORECAST_HORIZON")
+
+    night_temp_mean = _hourly_slice(hourly, mapping, "temperature_2m", night_start, morning_end)
+    night_temp_min = _hourly_slice(hourly, mapping, "temperature_2m", night_start, morning_end, reducer="min")
+    night_dew_point = _hourly_slice(hourly, mapping, "dew_point_2m", night_start, morning_end)
+    night_humidity = _hourly_slice(hourly, mapping, "relative_humidity_2m", night_start, morning_end)
+    night_total_cloud = _hourly_slice(hourly, mapping, "cloud_cover", night_start, morning_end)
+    night_low_cloud = _hourly_slice(hourly, mapping, "cloud_cover_low", night_start, morning_end)
+    night_mid_cloud = _hourly_slice(hourly, mapping, "cloud_cover_mid", night_start, morning_end)
+    night_high_cloud = _hourly_slice(hourly, mapping, "cloud_cover_high", night_start, morning_end)
+    pre_dawn_wind = _hourly_slice(hourly, mapping, "wind_speed_10m", pre_dawn_start, morning_end)
+    pre_dawn_gust = _hourly_slice(hourly, mapping, "wind_gusts_10m", pre_dawn_start, morning_end, reducer="max")
+    previous_12h_precip = _hourly_slice(hourly, mapping, "precipitation", twelve_start, morning_end, reducer="sum")
+    previous_24h_precip = _hourly_slice(hourly, mapping, "precipitation", twenty_four_start, morning_end, reducer="sum")
+    dew_point_spread = (
+        round(night_temp_mean - night_dew_point, 3)
+        if night_temp_mean is not None and night_dew_point is not None
+        else None
+    )
+
+    moisture_components = []
+    if previous_12h_precip is not None:
+        moisture_components.append(previous_12h_precip > 0.2 or previous_24h_precip is not None and previous_24h_precip > 1.0)
+    if night_humidity is not None:
+        moisture_components.append(night_humidity >= 85)
+    if night_humidity is None and previous_12h_precip is None:
+        moisture_signal = "UNCERTAIN"
+    elif all(moisture_components):
+        moisture_signal = "HIGH"
+    elif any(moisture_components):
+        moisture_signal = "MODERATE"
+    else:
+        moisture_signal = "LOW"
+
+    if dew_point_spread is None:
+        radiative_cooling_signal = "UNCERTAIN"
+    elif dew_point_spread <= 1.0:
+        radiative_cooling_signal = "HIGH"
+    elif dew_point_spread <= FOG_RADIATIVE_COOLING_SPREAD_C:
+        radiative_cooling_signal = "MODERATE"
+    else:
+        radiative_cooling_signal = "LOW"
+
+    if pre_dawn_wind is None:
+        wind_signal = "UNCERTAIN"
+    elif pre_dawn_wind <= FOG_WIND_CALM_KMH:
+        wind_signal = "CALM"
+    elif pre_dawn_wind <= FOG_WIND_BREAKUP_KMH:
+        wind_signal = "LIGHT"
+    else:
+        wind_signal = "MIXING"
+
+    if night_low_cloud is None:
+        system_low_cloud_risk = "UNCERTAIN"
+    elif night_low_cloud >= 60:
+        system_low_cloud_risk = "HIGH"
+    elif night_low_cloud >= 30:
+        system_low_cloud_risk = "MODERATE"
+    else:
+        system_low_cloud_risk = "LOW"
+
+    signals = [moisture_signal, radiative_cooling_signal, system_low_cloud_risk]
+    status = "PARTIAL" if "UNCERTAIN" in signals else "OK"
+    return {
+        "status": status,
+        "reason": None if status == "OK" else "SOME_FOG_INPUTS_UNAVAILABLE",
+        "date": target_date.isoformat(),
+        "night_window": {
+            "start": night_start.isoformat(),
+            "end": morning_end.isoformat(),
+            "definition": "previous day 18:00 local to target day 08:00 local",
+        },
+        "previous_12h_precip_mm": previous_12h_precip,
+        "previous_24h_precip_mm": previous_24h_precip,
+        "night_relative_humidity": night_humidity,
+        "night_dew_point": night_dew_point,
+        "night_temp": night_temp_mean,
+        "night_temp_min": night_temp_min,
+        "night_temp_dewpoint_spread": dew_point_spread,
+        "pre_dawn_wind_speed": pre_dawn_wind,
+        "pre_dawn_gust": pre_dawn_gust,
+        "night_total_cloud": night_total_cloud,
+        "night_low_cloud": night_low_cloud,
+        "night_mid_cloud": night_mid_cloud,
+        "night_high_cloud": night_high_cloud,
+        "moisture_signal": moisture_signal,
+        "radiative_cooling_signal": radiative_cooling_signal,
+        "wind_signal": wind_signal,
+        "system_low_cloud_risk": system_low_cloud_risk,
+        "probability_published": False,
+        "interpretation": "Raw indicators only; no fog probability is produced.",
+    }
+
+
 def _golden_location(
     config: dict,
     point_id: str,
@@ -8474,13 +9589,22 @@ def _golden_location(
     gefs_record = (gefs.get("points") or {}).get(point_id)
     hres_daily = _deterministic_daily_summary(hres_record, target_date, cutoff_date)
     gfs_daily = _deterministic_daily_summary(gfs_record, target_date, cutoff_date)
-    hres_windows = {window: _deterministic_hourly_window(hres_record, target_date, window, cutoff_date) for window in ("MORNING", "AFTERNOON")}
-    gfs_windows = {window: _deterministic_hourly_window(gfs_record, target_date, window, cutoff_date) for window in ("MORNING", "AFTERNOON")}
-    ec_windows = {window: _ensemble_window_view(ec_record, target_date, window, cutoff_date) for window in ("MORNING", "AFTERNOON")}
-    gefs_windows = {window: _gefs_window_view(gefs_record, target_date, window) for window in ("MORNING", "AFTERNOON")}
+    hres_windows = {window: _deterministic_hourly_window(hres_record, target_date, window, cutoff_date) for window in GOLDEN_WEEK_WINDOWS}
+    gfs_windows = {window: _deterministic_hourly_window(gfs_record, target_date, window, cutoff_date) for window in GOLDEN_WEEK_WINDOWS}
+    ec_windows = {window: _ensemble_window_view(ec_record, target_date, window, cutoff_date) for window in GOLDEN_WEEK_WINDOWS}
+    gefs_windows = {window: _gefs_window_view(gefs_record, target_date, window) for window in GOLDEN_WEEK_WINDOWS}
     consistency = {
         window: _deterministic_consistency(gfs_windows[window], gefs_windows[window])
-        for window in ("MORNING", "AFTERNOON")
+        for window in GOLDEN_WEEK_WINDOWS
+    }
+    model_consistency = {
+        window: _model_consistency(
+            hres_windows[window],
+            gfs_windows[window],
+            ec_windows[window],
+            gefs_windows[window],
+        )
+        for window in GOLDEN_WEEK_WINDOWS
     }
     phases = {
         name: _gefs_phase_for_date(gefs_record, target_date, name)
@@ -8488,7 +9612,7 @@ def _golden_location(
     }
     consensus = {
         window: _ensemble_consensus(ec_windows[window], gefs_windows[window])
-        for window in ("MORNING", "AFTERNOON")
+        for window in GOLDEN_WEEK_WINDOWS
     }
     viewing = {
         window.lower(): _viewing_signal(
@@ -8497,7 +9621,7 @@ def _golden_location(
             consistency[window],
             consensus[window].get("agreement"),
         )
-        for window in ("MORNING", "AFTERNOON")
+        for window in GOLDEN_WEEK_WINDOWS
     }
     event_phase = {
         "cloud_window": _compact_phase(phases["CLOUD_EVENT"]),
@@ -8541,6 +9665,8 @@ def _golden_location(
             "ec_ens": _compact_ensemble_view(ec_windows[window]),
             "gefs": _compact_ensemble_view(gefs_windows[window]),
             "gfs_support": consistency[window],
+            "gfs_deterministic_vs_gefs": consistency[window],
+            "model_consistency": model_consistency[window],
             "ensemble_agreement": agreement,
             "viewing_conditions": viewing[window.lower()],
         }
@@ -8559,6 +9685,8 @@ def _golden_location(
         },
         "morning": compact_window("MORNING"),
         "afternoon": compact_window("AFTERNOON"),
+        "night": compact_window("NIGHT"),
+        "fog_inputs": _fog_inputs(hres_record, target_date, cutoff_date),
         "event_phase": event_phase,
     }
 
@@ -8647,8 +9775,36 @@ def build_golden_week_brief(
             "highest_low_cloud_risk_windows": dates_for(
                 lambda item: any(
                     (view.get("viewing_conditions") or {}).get("low_cloud_signal") == "HIGH"
+                    for view in (item.get("morning"), item.get("afternoon"), item.get("night"))
+                    if view
+                )
+            ),
+            "highest_mid_cloud_flat_light_windows": dates_for(
+                lambda item: any(
+                    (view.get("viewing_conditions") or {}).get("mid_cloud_signal") == "HIGH"
                     for view in (item.get("morning"), item.get("afternoon"))
                     if view
+                )
+            ),
+            "best_high_cloud_texture_windows": dates_for(
+                lambda item: any(
+                    (view.get("viewing_conditions") or {}).get("high_cloud_signal") in {"MODERATE", "HIGH"}
+                    for view in (item.get("morning"), item.get("afternoon"))
+                    if view
+                )
+            ),
+            "low_visibility_related_risk_windows": dates_for(
+                lambda item: any(
+                    (view.get("viewing_conditions") or {}).get("visibility_related_signal") == "HIGH"
+                    for view in (item.get("morning"), item.get("afternoon"))
+                    if view
+                )
+            ),
+            "fog_favourable_dates": dates_for(
+                lambda item: (
+                    (item.get("fog_inputs") or {}).get("moisture_signal") in {"MODERATE", "HIGH"}
+                    and (item.get("fog_inputs") or {}).get("radiative_cooling_signal") in {"MODERATE", "HIGH"}
+                    and (item.get("fog_inputs") or {}).get("wind_signal") in {"CALM", "LIGHT"}
                 )
             ),
             "highest_wind_risk_windows": dates_for(
@@ -9273,6 +10429,14 @@ def compact_record(record: dict) -> dict:
         "daily",
         "ensemble",
         "error",
+        "variable_status",
+        "requested_variables",
+        "required_variables",
+        "optional_variables",
+        "degraded_variables",
+        "required_unavailable_variables",
+        "optional_unavailable_variables",
+        "unavailable_variables",
     )
     return {key: copy.deepcopy(record[key]) for key in keep if key in record}
 
@@ -9511,12 +10675,35 @@ def build_status(
         }
         for name, value in modules.items()
     }
+    # Each model family publishes its own per-variable availability.  A variable
+    # that is not served by a model is reported here explicitly instead of being
+    # silently dropped or filled from another model.
+    model_variable_status = {
+        "ecmwf_deterministic_hres": modules.get("hres", {}).get("variable_status", {}),
+        "ecmwf_ensemble": modules.get("ensemble", {}).get("variable_status", {}),
+        "gfs_deterministic": modules.get("gfs", {}).get("variable_status", {}),
+        "gefs_ensemble": modules.get("gefs", {}).get("variable_status", {}),
+    }
+    for name, module_name in (
+        ("hres", "ecmwf_deterministic_hres"),
+        ("gfs", "gfs_deterministic"),
+        ("ensemble", "ecmwf_ensemble"),
+        ("gefs", "gefs_ensemble"),
+    ):
+        if name not in module_details:
+            continue
+        value = modules.get(name, {})
+        module_details[name]["variable_status"] = value.get("variable_status", {})
+        module_details[name]["required_unavailable_variables"] = value.get("required_unavailable_variables", [])
+        module_details[name]["optional_unavailable_variables"] = value.get("optional_unavailable_variables", [])
+        module_details[name]["model_key"] = module_name
     gefs_module = modules.get("gefs") or {}
     if gefs_module:
         module_details.setdefault("gefs", {}).update({
             "usable_points": gefs_module.get("usable_points"),
             "required_missing_variables": gefs_module.get("required_missing_variables", []),
             "optional_missing_variables": gefs_module.get("optional_missing_variables", []),
+            "cloud_layer_status": gefs_module.get("cloud_layer_status", {}),
             "warnings": gefs_module.get("qa_warnings", []),
             "point_status_summary": gefs_module.get("point_status_summary", {}),
         })
@@ -9544,6 +10731,19 @@ def build_status(
             for slot_id, slot in config.get("route_slots", {}).items()
         },
         "manual_phenology_baseline": config.get("manual_phenology_baseline"),
+        "variable_status": model_variable_status,
+        "variable_model_policy": {
+            "models": [
+                "ECMWF deterministic / HRES",
+                "ECMWF ensemble",
+                "GFS deterministic",
+                "GEFS ensemble",
+            ],
+            "independent": True,
+            "cross_model_averaging": False,
+            "unavailable_values_are_null": True,
+            "note": "An OPTIONAL_UNAVAILABLE variable is missing at the source; it is never substituted from another model.",
+        },
         "failure_policy": "Any request, QA, model, timezone, missing-data, or grid-representativeness failure is recorded as INVALID; no external weather fallback is used.",
     }
     if light_summary_status is not None:

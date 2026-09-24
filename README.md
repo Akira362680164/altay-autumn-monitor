@@ -61,6 +61,39 @@ ChatGPT 负责每天读取 JSON，搜索并人工查看 2026/2025 同地点实�
 
 主预报的 `precision_class` 按 ECMWF 原生分辨率解释：0–90 小时为 `native_hourly`，90–144 小时为 `coarse_3h_interpolated`，超过 144 小时为 `trend_only_6h_plus`。Open-Meteo 可能把较粗原生时间步插值为逐小时数组，因此逐小时返回值不等于全程原生逐小时预报。GFS 在 120 小时后也使用较粗时间步；Ensemble 按其约 3 小时原生序列理解。
 
+## 统一天气变量体系（schema 1.4.0）
+
+四套模型——ECMWF deterministic（HRES）、ECMWF ensemble、GFS deterministic、GEFS ensemble——现在请求并上报同一套变量：
+
+| 类别 | 变量 |
+|---|---|
+| 温度 | `temperature_2m`、`dew_point_2m`、`relative_humidity_2m` |
+| 降水 | `precipitation`、`rain`、`snowfall` |
+| 云量 | `cloud_cover`、`cloud_cover_low`、`cloud_cover_mid`、`cloud_cover_high` |
+| 风 | `wind_speed_10m`（持续风）、`wind_direction_10m`（风向，圆形量）、`wind_gusts_10m`（阵风） |
+| 辐射 | `sunshine_duration`，不可用时回退 `shortwave_radiation` |
+
+约束：
+
+1. **数值只来自 Open-Meteo。** 不接入 Windy、Meteologix、天气 App 或县城天气网站。
+2. **四套模型互相独立。** 只做逐变量比较，不做跨模型平均，也不把 ECMWF ensemble 与 GEFS 平均；确定性模型与集合模型同样不平均。
+3. **分层云始终取自 API。** 绝不用 `总云量 − 低云` 反推中云/高云——三层相互重叠、不可相减。数据源返回全 `null` 数组时，该层显式标为 `OPTIONAL_UNAVAILABLE`，不用总云量顶替。
+4. **required / optional 边界。** 核心必需变量不可用会使模块降为 `PARTIAL`/`FAILED`；可选变量不可用只记录状态，不影响模块整体可用性。GEFS 的分层云在新疆当前返回全 `null` 数组，因此稳定落在 `OPTIONAL_UNAVAILABLE`。
+5. **阵风与持续风是两个量。** 所有产物中 `wind_gusts_10m` 与 `wind_speed_10m` 分开，不存在「把阵风当持续风」的字段。现有落叶机械应力阈值体系（核心约 gust ≥ 50 km/h）保持不变。
+6. **风向按圆形量处理。** 逐小时保存，只用矢量平均（`atan2(Σsin, Σcos)`）归约；集合分布里不出现 `wind_direction_10m` 的算术百分位。退化时返回 `null`。
+7. **不可用就是不可用。** 缺失值写 `null`（状态字段写 `UNAVAILABLE`），绝不填 `0`。若某变量不可用，只记录该变量不可用，不让整个模型模块失败（除非缺的是 required/core 变量）。
+
+`status.json` 按模型分组发布 `variable_status`（`OK` / `PARTIAL` / `REQUIRED_UNAVAILABLE` / `OPTIONAL_UNAVAILABLE` / `MISSING` / `ARRAY_LENGTH_MISMATCH` / `NULL_ARRAY`）与 `variable_model_policy`（`independent=true`、`cross_model_averaging=false`）。
+
+`summary.json.golden_week_brief` 的每个窗口（`MORNING` 08:00–12:00、`AFTERNOON` 12:00–18:00、`NIGHT` 18:00–次日 08:00）同时给出 `ec_det`、`gfs_det`、`ec_ens`、`gefs` 四个紧凑视图、`gfs_support`、`model_consistency` 与 `viewing_conditions`：
+
+- `deterministicCompact`：`cloud` / `low_cloud` / `mid_cloud` / `high_cloud`、`precip_mm` / `rain_mm` / `snow_cm`、`temp_min_c` / `temp_mean_c` / `temp_max_c`、`dew_point_c`、`relative_humidity_pct`、`wind_speed_kmh`、`wind_direction_deg`、`gust_kmh`、`sunshine_or_shortwave`。
+- `ensembleCompact`：`cloud_median` / `low_cloud_median` / `mid_cloud_median` / `high_cloud_median`、`p_cloud_gt_50` / `p_cloud_gt_70`、`p_low_cloud_gt_50` / `p_mid_cloud_gt_50` / `p_high_cloud_gt_50`、`p_precip`、`p_snow`、`wind_speed_median`、`gust_median` / `gust_p90`、`temp_p10` / `temp_median` / `temp_p90`、`dew_point_median`、`relative_humidity_median`，以及 `layer_availability` 明确标示哪一层真的有数据。
+
+`viewing_conditions` 分层判断摄影条件：`total_cloud_signal`、`low_cloud_signal`（山体遮挡/能见度）、`mid_cloud_signal`（直射光被压平）、`high_cloud_signal`（天空纹理与霞光潜力）、`precip_signal`、`snow_signal`、`wind_signal`、`visibility_related_signal`、`model_agreement`。**高云不等于坏天气**，只有在低云/中云或降水同时存在时才降低判断等级。不使用 Open-Meteo 字段冒充能见度实测量。
+
+`fog_inputs`（禾木晨雾辅助位）只发布原始指标：`previous_12h_precip_mm`、`previous_24h_precip_mm`、`night_relative_humidity`、`night_dew_point`、`night_temp`、`night_temp_dewpoint_spread`、`pre_dawn_wind_speed`、`pre_dawn_gust`、`night_total_cloud` / `night_low_cloud` / `night_mid_cloud` / `night_high_cloud`，以及 `moisture_signal`、`radiative_cooling_signal`、`wind_signal`、`system_low_cloud_risk`。`probability_published` 恒为 `false`——不输出「晨雾概率 73%」这类伪精确数字。
+
 ## 坐标注册表和主链闸门
 
 `config/points.json` 是唯一坐标注册表。只有 `status=VERIFIED` 的点能进入正式请求、历史差分和主链摘要；代码中的 `active_points()` 是硬过滤边界。
@@ -250,7 +283,7 @@ GFS 只输出 EC/GFS 的温度趋势、寒冷窗口、降水和强风一致性�
 └── README.md
 ```
 
-`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照、GEFS response cache 和派生 weather-event cache 长期保留。Schema 版本目前为 `1.3.0`。这是对 v1.0.0/v1.1.0/v1.2.0 的兼容性新增：已有字段和模块语义保持不变，新增独立 `gefs` 模块、国庆 `golden_week_brief` 和 GEFS/摘要 QA 字段。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
+`latest/` 保存完整数据；每日 archive 保存去掉逐小时数组的可读快照，`archive/YYYY-MM-DD/raw/` 保存压缩后的模块原始快照。原始 gzip 目录保留 14 天，紧凑每日快照、GEFS response cache 和派生 weather-event cache 长期保留。Schema 版本目前为 `1.4.0`。这是对 v1.0.0–v1.3.0 的兼容性新增：已有字段和模块语义保持不变，四套模型改用统一天气变量集合，`summary.json` / `status.json` / `gefs.json` / `module.json` 新增 `variable_status` 等可用性字段。读取旧 archive 时缺失字段按不可用处理，不做回填。破坏性变更必须升级 major version 并同步更新 Schema、测试和 README。
 
 ## GitHub Actions 和本地运行
 
@@ -277,4 +310,6 @@ python3.12 src/pipeline.py --refresh-history
 5. 对需要结论的同地点，另行搜索并人工查看 2026/2025 实拍；把实拍判断与天气证据分开写，不能把 JSON 的天气方向改写成自动物候日差。
 6. 读取 `weather_events.json`、`grid_registry.json`、`long_range.json`、`hres.json`、`history_comparison.json`、`ensemble.json`、`single_runs.json` 追溯具体点、格点、成员和 run；遇到 `INVALID`、`FAILED`、`PARTIAL` 或 `UNDETERMINED` 时保留不确定性。weather events 只能用来描述天气事件和机械天气压力，不能直接改写为实际物候日期。
 
-当前 v1.3.0 Schema 已覆盖长期背景层、派生 weather-event 层、独立 GEFS 层和国庆关键日期简表。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。
+7. 判断摄影/通行条件时读取 `summary.json.golden_week_brief`：每个窗口的 `ec_det`、`gfs_det`、`ec_ens`、`gefs` 四套独立视图、`model_consistency`、`viewing_conditions`（含逐层来源 `layer_sources`）和 `fog_inputs`。低云看山体遮挡、中云看直射光、高云看天空纹理；高云不等于坏天气。差异大或某变量 `null` 时按「未确认」处理，不做跨模型平均。
+
+当前 v1.4.0 Schema 已覆盖长期背景层、派生 weather-event 层、独立 GEFS 层、统一天气变量可用性（`variable_status`）和国庆关键日期简表。后续如果需要增加图像人工复核结果，建议以独立字段或独立文件追加，并保持 Codex 天气层与 ChatGPT 视觉判断层分离。
