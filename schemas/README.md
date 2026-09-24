@@ -58,6 +58,39 @@ The main Altay `history_comparison.json` is configured for `history_years=[2023,
 
 `history_forward.schema.json` defines the Altay-only historical forward-path artifact. It uses `history_years=[2023, 2024, 2025]`, anchors on the current `forecast_date`, and exposes `d0_7`, `d8_15`, and `d16_to_10_06` under each core region and year. The last window is hard-clipped at October 6. The three historical records for each core point must pass the existing 13.5 km Historical grid-distance QA and share one returned grid before `cross_year_comparison_usable` can be true. This module is additive and does not alter the Ejina namespace or the existing forecast modules.
 
+### Rolling-window applicability in `history_forward`
+
+Because the rolling windows are clipped at a fixed calendar cutoff, they eventually run past it. Once the anchor date advances far enough that `forecast_date + offset` is after the cutoff, the window has no calendar days left: it is structurally empty, not a fetch failure.
+
+- `window_definitions[].status` becomes `NOT_APPLICABLE` with `reason = WINDOW_AFTER_CUTOFF`. A reader that only knows the older vocabulary may treat `NOT_APPLICABLE` as "this window does not exist in this season"; it never means missing data.
+- Every per-year window (`$defs.window.status`) becomes `NOT_APPLICABLE` instead of `UNAVAILABLE`/`INVALID`, and the per-point `status` becomes `NOT_APPLICABLE`.
+- Closed windows are excluded from the point-level OK/FAILED judgement, from `regions[].status`, and from `partial_points`. Only the still-applicable windows have to be `OK` for the module to report `OK`.
+- When the anchor reaches October 7 every window is closed: the module reports `status = SKIPPED`, every point carries `usable_for_main_chain = false` and `reason = HISTORY_FORWARD_WINDOW_CLOSED`, `successful_fetches` / `failed_fetches` / `expected_fetches` are all `0`, and no HTTP request is issued.
+- The lightweight views consumed by `phenology_weather_summary.json` and the compact region paths only speak `OK`/`PARTIAL`/`INVALID`/`UNAVAILABLE`; there a closed window is folded into `UNAVAILABLE` while its `reason` is preserved.
+
+### ECMWF single runs require the full-horizon cycles only
+
+`single_runs.json` compares consecutive ECMWF IFS initialisations. ECMWF does not publish every cycle with the same horizon: `00Z` and `12Z` carry the full horizon (about 240 h) while `06Z` and `18Z` are short runs (about 144 h / 6 days). A cycle missing because the model never published it is a model property, not a data failure.
+
+Each run reports `cycle_class` (`LONG` / `SHORT`) and `forecast_horizon_hours`, and the region verdict requires only the long cycles:
+
+| Region state | Condition |
+|---|---|
+| `OK` | every requested long cycle succeeded |
+| `PARTIAL` | `SINGLE_RUN_LONG_CYCLE_PARTIALLY_DISTRIBUTED`; at least `SINGLE_RUN_MIN_REQUIRED_RUNS` (2) long cycles succeeded |
+| `FAILED` | fewer than 2 long cycles succeeded (`SINGLE_RUN_LONG_CYCLE_UNAVAILABLE`) |
+
+Short cycles are still fetched, reported through `short_run_count_requested` / `short_run_count_available`, and compared when present; `required_run_count_requested/available` reports the long-cycle tally, and `target_reachable_by_short_runs` records whether a short cycle alone could have reached the target timestamp.
+
+### Long range separates the required horizon from the best-effort edge
+
+`long_range.schema.json` describes the coarse GEFS (`ncep_gefs05`) background signal. `requested_forecast_days` is `35` and the declared background lead range stays `D16_D35`, but the last block `D34_D35` sits on the model edge: the daily run executes before that cycle is disseminated, so the trailing block is best effort.
+
+- `required_forecast_days` (`LONG_RANGE_REQUIRED_LEAD_END + 1`, currently `34`, i.e. lead days `D0`–`D33`) is what the artifact actually requires.
+- `aggregation.required_lead_day_range` and `aggregation.edge_blocks` publish the split.
+- `qa.long_range_horizon_check` reports `missing_required_lead_days` separately from `edge_shortfall_lead_days`, and from `missing_lead_days` (their union). Only a gap inside the required range can pull `forecast_horizon_status` down to `PARTIAL` or `FAILED`; a missing `D34_D35` block is recorded but does not fail the module.
+- The same split applies per variable. `ncep_gefs05` routinely publishes `precipitation` and `snowfall` one 3-day block shorter than `temperature_2m`, so `long_range_member_check.edge_truncated_variables` is non-empty on most days. A variable only sets `variable_horizon_partial` (and downgrades the region) when its common complete range stops inside the required range — that is, when `first_timestamp` is after the forecast origin or `last_timestamp` is before lead day `LONG_RANGE_REQUIRED_LEAD_END`. Region QA publishes the deciding list as `variable_horizon_partial_variables` and the raw list as `edge_truncated_variables`.
+
 `grid_registry.schema.json` describes the lightweight point-to-returned-grid audit registry. `phenology_weather_summary.schema.json` describes the ChatGPT-facing compact statistics file; it contains no hourly or daily raw series. Full audit data remains in the module artifacts and compressed raw archives.
 
 `gefs.schema.json` describes the independent Open-Meteo GEFS module. `ncep_gefs025` is the near-range global product (about 0.25°, 31 sequences, approximately 10 days) and `ncep_gefs05` is the coarse long-range global product (about 0.5°, 31 sequences, approximately 35 days). The API currently provides 3-hour ensemble fields; a 3-hour output frequency does not mean that a date more than 10 days away has 3-hour forecast precision. The public artifact contains distributions, probabilities, event phase statistics, and deterministic-support checks; member-level raw response data remains in the compressed raw archive/cache.

@@ -3,7 +3,7 @@ import copy
 import json
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -847,8 +847,10 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(translated["d16_to_10_06"]["end_date"], "2023-10-06")
         late = pipeline.history_forward_window_definitions(date(2026, 10, 1))
         self.assertEqual(late[0]["end_date"], "2026-10-06")
-        self.assertEqual(late[1]["status"], "UNAVAILABLE")
-        self.assertEqual(late[2]["status"], "UNAVAILABLE")
+        self.assertEqual(late[0]["status"], "OK")
+        self.assertEqual(late[1]["status"], pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE)
+        self.assertEqual(late[2]["status"], pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE)
+        self.assertEqual(late[1]["reason"], "WINDOW_AFTER_CUTOFF")
         for item in late:
             for field in ("requested_start_date", "requested_end_date", "start_date", "end_date"):
                 if item.get(field):
@@ -1064,7 +1066,11 @@ class PipelineUnitTests(unittest.TestCase):
     def test_long_range_current_model_contract(self):
         self.assertEqual(pipeline.LONG_RANGE_MODEL_ID, "ncep_gefs05")
         self.assertEqual(pipeline.LONG_RANGE_ENSEMBLE_MEMBERS, 31)
-        self.assertEqual(pipeline.LONG_RANGE_REQUESTED_FORECAST_DAYS, 36)
+        # `ncep_gefs05` documents about 35 days; requesting 36 sat one day past
+        # what the daily run time can receive and produced a permanent PARTIAL.
+        self.assertEqual(pipeline.LONG_RANGE_REQUESTED_FORECAST_DAYS, 35)
+        self.assertEqual(pipeline.GEFS_LONG_FORECAST_DAYS, 35)
+        self.assertEqual(pipeline.LONG_RANGE_REQUIRED_LEAD_END + 1, 34)
         self.assertEqual(
             pipeline.OPEN_METEO_ENDPOINTS["ensemble"],
             "https://ensemble-api.open-meteo.com/v1/ensemble",
@@ -1114,8 +1120,13 @@ class PipelineUnitTests(unittest.TestCase):
         self.assertEqual(partial_windows[-1]["status"], "UNAVAILABLE")
         self.assertEqual(partial_windows[-1]["signal_evolution"]["status"], "INSUFFICIENT_HISTORY")
         partial_horizon = pipeline.long_range_horizon_check({lead: values for lead, values in daily_by_lead.items() if lead <= 34})
-        self.assertEqual(partial_horizon["status"], "PARTIAL")
+        # Lead day 35 belongs to the trailing 3-day block and is published only
+        # by the freshest long run, so losing it is an edge shortfall, not a
+        # horizon failure.
+        self.assertEqual(partial_horizon["status"], "PASS")
         self.assertEqual(partial_horizon["missing_lead_days"], [35])
+        self.assertEqual(partial_horizon["edge_shortfall_lead_days"], [35])
+        self.assertEqual(partial_horizon["missing_required_lead_days"], [])
 
     def test_long_range_optional_variable_edge_missing_is_undetermined(self):
         hourly = self.make_long_range_hourly()
@@ -2649,6 +2660,306 @@ class PipelineUnitTests(unittest.TestCase):
             })),
             [],
         )
+
+    def make_single_run_record(self, point, init_time, horizon_hours):
+        start_local = init_time + timedelta(hours=8)
+        times = [
+            (start_local + timedelta(hours=index)).strftime("%Y-%m-%dT%H:%M")
+            for index in range(horizon_hours)
+        ]
+        hourly = {"time": times}
+        for variable in pipeline.SINGLE_RUN_VARIABLES:
+            hourly[variable] = [1.0] * len(times)
+        return {
+            "point_id": point["id"],
+            "point": point,
+            "status": "PASS",
+            "source": "Open-Meteo",
+            "endpoint": pipeline.OPEN_METEO_ENDPOINTS["single_runs"],
+            "model": "ECMWF IFS HRES 9 km",
+            "solar_variable": "sunshine_duration",
+            "hourly": hourly,
+            "request": {"parameters": {}},
+            "response": {
+                "grid_coordinate": {"latitude": point["latitude"], "longitude": point["longitude"]},
+                "returned_elevation": 1000,
+                "timezone": "Asia/Shanghai",
+                "utc_offset_seconds": 28800,
+            },
+            "qa": {
+                "final_status": "PASS",
+                "grid_distance_km": 0,
+                "grid_distance_limit_km": pipeline.HRES_GRID_QA_LIMIT_KM,
+            },
+        }
+
+    def test_closed_history_window_folds_into_unavailable_in_lightweight_views(self):
+        definition = {
+            "window": "d16_to_10_06",
+            "status": pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
+            "reason": "WINDOW_AFTER_CUTOFF",
+            "start_date": None,
+            "end_date": None,
+        }
+        summary = pipeline.lightweight_window_summary([], definition)
+        # The history-forward contract keeps the structural state...
+        self.assertEqual(summary["status"], pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE)
+        # ... while the lightweight views only know OK/PARTIAL/INVALID/UNAVAILABLE.
+        flattened = pipeline.flattened_lightweight_window(summary)
+        self.assertEqual(flattened["status"], "UNAVAILABLE")
+        self.assertEqual(flattened["reason"], "WINDOW_AFTER_CUTOFF")
+        with (ROOT / "schemas" / "phenology_weather_summary.schema.json").open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        self.assertEqual(
+            list(Draft202012Validator(schema["$defs"]["light_window"]).iter_errors(flattened)), []
+        )
+
+    def test_history_forward_empty_window_is_not_applicable_and_does_not_fail_the_module(self):
+        config = pipeline.load_config()
+        requests = []
+
+        def fake_fetch(_client, **kwargs):
+            requests.append(kwargs["params"])
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        # 2026-09-21 is the first anchor date whose d16_to_10_06 window starts
+        # past the 10-06 cutoff: the window becomes structurally empty.
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    result = pipeline.run_history_forward(
+                        config,
+                        object(),
+                        "2026-09-21T00:00:00Z",
+                        "2026-09-20",
+                        date(2026, 9, 21),
+                    )
+
+        definitions = {item["window"]: item for item in result["window_definitions"]}
+        self.assertEqual(
+            definitions["d16_to_10_06"]["status"],
+            pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
+        )
+        self.assertEqual(
+            pipeline.history_forward_applicable_window_keys(result["window_definitions"]),
+            ["d0_7", "d8_15"],
+        )
+        self.assertEqual(result["status"], "OK")
+        for point in result["points"].values():
+            self.assertEqual(point["status"], "OK")
+            self.assertTrue(point["cross_year_comparison_usable"])
+            for year in ("2023", "2024", "2025"):
+                self.assertEqual(
+                    point["years"][year]["d16_to_10_06"]["status"],
+                    pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
+                )
+                self.assertEqual(
+                    point["years"][year]["d16_to_10_06"]["reason"],
+                    "WINDOW_AFTER_CUTOFF",
+                )
+        for region_id in ("baihaba", "kanas", "hemu", "keketuohai"):
+            self.assertEqual(result["regions"][region_id]["status"], "OK")
+        expected = len(pipeline.history_forward_point_ids(config)) * 3
+        self.assertEqual(result["expected_fetches"], expected)
+        self.assertEqual(result["successful_fetches"], expected)
+        self.assertEqual(len(requests), expected)
+        self.assert_history_forward_schema_valid(result)
+
+    def test_history_forward_closed_season_is_skipped_without_fetching(self):
+        config = pipeline.load_config()
+        calls = []
+
+        def fake_fetch(_client, **kwargs):
+            calls.append(kwargs["params"])
+            return self.make_history_forward_record(kwargs["point"], kwargs["params"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(pipeline, "HISTORY_CACHE_DIR", Path(tmp)):
+                with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+                    result = pipeline.run_history_forward(
+                        config,
+                        object(),
+                        "2026-10-08T00:00:00Z",
+                        "2026-10-07",
+                        date(2026, 10, 8),
+                    )
+
+        self.assertEqual(result["status"], "SKIPPED")
+        self.assertEqual(calls, [])
+        self.assertEqual(result["expected_fetches"], 0)
+        self.assertEqual(result["successful_fetches"], 0)
+        self.assertEqual(result["failed_fetches"], 0)
+        self.assertEqual(pipeline.history_forward_applicable_window_keys(result["window_definitions"]), [])
+        for item in result["window_definitions"]:
+            self.assertEqual(item["status"], pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE)
+        for point in result["points"].values():
+            self.assertEqual(point["status"], pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE)
+            self.assertFalse(point["usable_for_main_chain"])
+            self.assertEqual(point["reason"], pipeline.HISTORY_FORWARD_WINDOW_CLOSED_REASON)
+        for year in ("2023", "2024", "2025"):
+            self.assertEqual(
+                result["regions"]["kanas"]["years"][year]["d16_to_10_06"]["status"],
+                pipeline.HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
+            )
+        self.assert_history_forward_schema_valid(result)
+
+    def assert_history_forward_schema_valid(self, result):
+        """The published NOT_APPLICABLE / SKIPPED states must stay schema-valid."""
+        with (ROOT / "schemas" / "history_forward.schema.json").open(encoding="utf-8") as handle:
+            schema = json.load(handle)
+        errors = sorted(Draft202012Validator(schema).iter_errors(result), key=lambda e: list(e.path))
+        self.assertEqual([(list(e.path), e.message) for e in errors], [])
+
+    def test_single_runs_only_requires_the_full_horizon_cycles(self):
+        config = pipeline.load_config()
+        horizons = []
+
+        def fake_fetch(_client, **kwargs):
+            init_time = datetime.strptime(kwargs["params"]["run"], "%Y-%m-%dT%H:%M")
+            short = init_time.hour in pipeline.SINGLE_RUN_SHORT_CYCLE_HOURS
+            horizon = 144 if short else 240
+            horizons.append((init_time.hour, horizon))
+            return self.make_single_run_record(kwargs["point"], init_time, horizon)
+
+        now_utc = datetime(2026, 9, 24, 1, 46, tzinfo=timezone.utc)
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            result = pipeline.run_single_runs(
+                config,
+                object(),
+                "2026-09-24T01:46:00Z",
+                "2026-09-23",
+                now_utc,
+            )
+
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["required_runs_requested"], 4)
+        self.assertEqual(result["short_runs_requested"], 4)
+        baihaba = result["regions"]["baihaba"]
+        self.assertEqual(baihaba["target_time"], "2026-10-01T05:00+08:00")
+        self.assertEqual(baihaba["status"], "OK")
+        self.assertEqual(baihaba["run_count_requested"], 8)
+        self.assertEqual(baihaba["required_run_count_requested"], 4)
+        self.assertEqual(baihaba["required_run_count_available"], 4)
+        self.assertEqual(baihaba["short_run_count_requested"], 4)
+        self.assertEqual(baihaba["short_run_count_available"], 0)
+        self.assertFalse(baihaba["target_reachable_by_short_runs"])
+        # The old 8/8 rule failed this region even though every full-horizon
+        # cycle was present and usable.
+        self.assertEqual(baihaba["run_count_available"], 4)
+        self.assertEqual(len(baihaba["runs"]), 8)
+        for entry in baihaba["runs"]:
+            if entry["cycle_class"] == "SHORT":
+                self.assertEqual(entry["status"], "INVALID")
+                self.assertEqual(entry["target"]["reason"], "TARGET_TIME_NOT_IN_RUN")
+                self.assertEqual(entry["forecast_horizon_hours"], 144)
+            else:
+                self.assertEqual(entry["status"], "PASS")
+                self.assertEqual(entry["forecast_horizon_hours"], 240)
+
+    def test_single_runs_is_partial_when_a_full_horizon_cycle_is_unavailable(self):
+        config = pipeline.load_config()
+
+        def fake_fetch(_client, **kwargs):
+            init_time = datetime.strptime(kwargs["params"]["run"], "%Y-%m-%dT%H:%M")
+            if init_time.hour == 0:
+                return {"status": "INVALID", "point_id": kwargs["point"]["id"], "hourly": {}, "qa": {"final_status": "INVALID"}}
+            short = init_time.hour in pipeline.SINGLE_RUN_SHORT_CYCLE_HOURS
+            return self.make_single_run_record(kwargs["point"], init_time, 144 if short else 240)
+
+        now_utc = datetime(2026, 9, 24, 1, 46, tzinfo=timezone.utc)
+        with patch.object(pipeline, "fetch_point", side_effect=fake_fetch):
+            result = pipeline.run_single_runs(
+                config,
+                object(),
+                "2026-09-24T01:46:00Z",
+                "2026-09-23",
+                now_utc,
+            )
+
+        self.assertEqual(result["status"], "PARTIAL")
+        baihaba = result["regions"]["baihaba"]
+        self.assertEqual(baihaba["status"], "PARTIAL")
+        self.assertEqual(baihaba["status_reason"], "SINGLE_RUN_LONG_CYCLE_PARTIALLY_DISTRIBUTED")
+        self.assertEqual(baihaba["required_run_count_available"], pipeline.SINGLE_RUN_MIN_REQUIRED_RUNS)
+
+    def test_long_range_horizon_requires_the_deliverable_block_range(self):
+        hourly = self.make_long_range_hourly()
+        _origin, daily_by_lead = pipeline.long_range_daily_member_values(hourly)
+
+        full = pipeline.long_range_horizon_check(daily_by_lead)
+        self.assertEqual(full["status"], "PASS")
+        self.assertEqual(full["expected_lead_day_range"], [0, pipeline.LONG_RANGE_LEAD_END])
+        self.assertEqual(full["required_lead_day_range"], [0, pipeline.LONG_RANGE_REQUIRED_LEAD_END])
+        self.assertEqual(full["required_forecast_days"], 34)
+        self.assertEqual(full["missing_required_lead_days"], [])
+
+        deliverable = {
+            lead: values
+            for lead, values in daily_by_lead.items()
+            if lead <= pipeline.LONG_RANGE_REQUIRED_LEAD_END
+        }
+        self.assertEqual(pipeline.long_range_horizon_check(deliverable)["status"], "PASS")
+
+        short_but_contiguous = {
+            lead: values for lead, values in daily_by_lead.items() if lead <= 30
+        }
+        partial = pipeline.long_range_horizon_check(short_but_contiguous)
+        self.assertEqual(partial["status"], "PARTIAL")
+        self.assertEqual(partial["missing_required_lead_days"], [31, 32, 33])
+
+        too_short = {
+            lead: values for lead, values in daily_by_lead.items() if lead <= 10
+        }
+        self.assertEqual(pipeline.long_range_horizon_check(too_short)["status"], "FAIL")
+
+        holed = {
+            lead: values for lead, values in daily_by_lead.items() if lead != 30
+        }
+        self.assertEqual(pipeline.long_range_horizon_check(holed)["status"], "FAIL")
+
+    def test_long_range_edge_truncation_only_counts_inside_the_required_range(self):
+        daily_by_lead = {
+            0: {"temperature_2m": {"date": "2026-09-24"}},
+            33: {"temperature_2m": {"date": "2026-10-27"}},
+            35: {"temperature_2m": {"date": "2026-10-29"}},
+        }
+
+        def member_check(first: str, last: str) -> dict:
+            variables = ("precipitation", "snowfall")
+            return {
+                "edge_truncated_variables": list(variables),
+                "variable_availability": {
+                    variable: {
+                        "first_timestamp": first,
+                        "last_timestamp": last,
+                        "edge_truncated": True,
+                    }
+                    for variable in variables
+                },
+            }
+
+        # Precipitation/snowfall stopping inside the trailing D34_D35 block is a
+        # property of ncep_gefs05, not a data failure.
+        edge_only = member_check("2026-09-24T00:00", "2026-10-28T12:00")
+        self.assertEqual(
+            pipeline.long_range_variable_horizon_offenders(edge_only, daily_by_lead), []
+        )
+
+        # A variable that stops before the required last block must still downgrade.
+        inside_required = member_check("2026-09-24T00:00", "2026-10-14T12:00")
+        self.assertEqual(
+            pipeline.long_range_variable_horizon_offenders(inside_required, daily_by_lead),
+            ["precipitation", "snowfall"],
+        )
+
+        # A missing leading edge is never an acceptable edge truncation.
+        lead_trimmed = member_check("2026-09-25T00:00", "2026-10-28T12:00")
+        self.assertEqual(
+            pipeline.long_range_variable_horizon_offenders(lead_trimmed, daily_by_lead),
+            ["precipitation", "snowfall"],
+        )
+
+        self.assertEqual(pipeline.long_range_variable_horizon_offenders({}, daily_by_lead), [])
 
 
 if __name__ == "__main__":

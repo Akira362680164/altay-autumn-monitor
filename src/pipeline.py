@@ -159,6 +159,13 @@ SINGLE_RUN_VARIABLES = [
 SINGLE_RUN_REQUIRED_VARIABLES = [
     value for value in SINGLE_RUN_VARIABLES if value != "sunshine_duration"
 ]
+# ECMWF IFS does not publish every cycle with the same forecast length: the
+# 00Z/12Z runs carry the full horizon while the 06Z/18Z runs are short runs.
+# A run-to-run drift comparison therefore only requires the long cycles; a
+# missing short cycle is a model property, not a data failure.
+SINGLE_RUN_LONG_CYCLE_HOURS = (0, 12)
+SINGLE_RUN_SHORT_CYCLE_HOURS = (6, 18)
+SINGLE_RUN_MIN_REQUIRED_RUNS = 2
 ENSEMBLE_VARIABLES = [*UNIFIED_WEATHER_VARIABLES]
 EC_ENSEMBLE_REQUIRED_VARIABLES = [value for value in CORE_REGION_VARIABLE_REQUIRED]
 EC_ENSEMBLE_OPTIONAL_VARIABLES = [
@@ -174,9 +181,14 @@ ECMWF_ENSEMBLE_FORECAST_DAYS = 15
 LONG_RANGE_MODEL_ID = "ncep_gefs05"
 LONG_RANGE_MODEL = "GFS Ensemble 0.5°"
 LONG_RANGE_ENSEMBLE_MEMBERS = 31
-LONG_RANGE_REQUESTED_FORECAST_DAYS = 36
+LONG_RANGE_REQUESTED_FORECAST_DAYS = 35
 LONG_RANGE_LEAD_START = 16
 LONG_RANGE_LEAD_END = 35
+# `ncep_gefs05` documents about 35 forecast days and only the freshest long run
+# extends to the very last published block.  The daily run time happens before
+# that run is disseminated, so the trailing block D34_D35 is best effort while
+# the last block needed for the declared background signal is D31_D33.
+LONG_RANGE_REQUIRED_LEAD_END = 33
 LONG_RANGE_VARIABLES = ["temperature_2m", "precipitation", "snowfall", "wind_gusts_10m"]
 LONG_RANGE_ENDPOINT_DOC = "https://open-meteo.com/en/docs/ensemble-api"
 LONG_RANGE_MODEL_REGISTRY_DOC = "https://github.com/open-meteo/open-meteo/blob/main/openapi/ensemble.yml"
@@ -279,6 +291,11 @@ DEFAULT_HISTORY_YEARS = (2025, 2026)
 HISTORY_FORWARD_YEARS = (2023, 2024, 2025)
 HISTORY_FORWARD_CUTOFF_MONTH_DAY = "10-06"
 HISTORY_FORWARD_WINDOW_KEYS = ("d0_7", "d8_15", "d16_to_10_06")
+# A rolling window can run past the hard cutoff once the anchor date advances.
+# Such a window is structurally empty, not a data failure, so it is marked
+# NOT_APPLICABLE and excluded from every OK/INVALID judgement.
+HISTORY_FORWARD_WINDOW_NOT_APPLICABLE = "NOT_APPLICABLE"
+HISTORY_FORWARD_WINDOW_CLOSED_REASON = "HISTORY_FORWARD_WINDOW_CLOSED"
 ALTAY_WEATHER_EVENTS_CUTOFF = dt.date(2026, 10, 6)
 WEATHER_EVENTS_CACHE_SCHEMA_VERSION = "1.0.0"
 WEATHER_EVENT_RULE_VERSION = "weather_events_v1"
@@ -2461,6 +2478,26 @@ def run_history(
     )
 
 
+def history_forward_window_applicable(definition: dict | None) -> bool:
+    """True when a window definition still overlaps the hard cutoff date.
+
+    A window whose start is past the cutoff has zero days by construction.  It
+    carries no data and must never be judged as a missing-data failure.
+    """
+    if not isinstance(definition, dict):
+        return False
+    return definition.get("status") != HISTORY_FORWARD_WINDOW_NOT_APPLICABLE
+
+
+def history_forward_applicable_window_keys(definitions) -> list[str]:
+    """Return the window keys that are still inside the cutoff date."""
+    if isinstance(definitions, dict):
+        items = list(definitions.items())
+    else:
+        items = [(item.get("window"), item) for item in (definitions or [])]
+    return [key for key, definition in items if history_forward_window_applicable(definition)]
+
+
 def history_forward_window_definitions(
     forecast_date: dt.date,
     cutoff_month_day: str = HISTORY_FORWARD_CUTOFF_MONTH_DAY,
@@ -2490,7 +2527,7 @@ def history_forward_window_definitions(
                 "start_date": None,
                 "end_date": None,
                 "cutoff_date": cutoff_date.isoformat(),
-                "status": "UNAVAILABLE",
+                "status": HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
                 "reason": "WINDOW_AFTER_CUTOFF",
             })
             continue
@@ -2523,9 +2560,13 @@ def history_forward_windows_for_year(forecast_date: dt.date, year: int) -> dict[
     return windows
 
 
-def _history_forward_window_unavailable(definition: dict, reason: str) -> dict:
+def _history_forward_window_unavailable(
+    definition: dict,
+    reason: str,
+    status: str = "UNAVAILABLE",
+) -> dict:
     return {
-        "status": "UNAVAILABLE",
+        "status": status,
         "usable_for_cross_year_comparison": False,
         "start_date": definition.get("start_date"),
         "end_date": definition.get("end_date"),
@@ -2539,10 +2580,22 @@ def _history_forward_window_unavailable(definition: dict, reason: str) -> dict:
     }
 
 
+def _definition_window_status(definition: dict, *, default: str = "UNAVAILABLE") -> str:
+    """Mirror a structurally empty window definition instead of faking failure."""
+    status = (definition or {}).get("status")
+    if status in {"UNAVAILABLE", HISTORY_FORWARD_WINDOW_NOT_APPLICABLE}:
+        return status
+    return default
+
+
 def history_forward_window_summary(days: list[dict], definition: dict) -> dict:
     """Summarize one historical window without inferring missing days."""
     if definition.get("status") != "OK" or not definition.get("start_date") or not definition.get("end_date"):
-        return _history_forward_window_unavailable(definition, definition.get("reason") or "WINDOW_UNAVAILABLE")
+        return _history_forward_window_unavailable(
+            definition,
+            definition.get("reason") or "WINDOW_UNAVAILABLE",
+            status=_definition_window_status(definition),
+        )
     start_date = dt.date.fromisoformat(definition["start_date"])
     end_date = dt.date.fromisoformat(definition["end_date"])
     expected_dates = []
@@ -3057,7 +3110,7 @@ def lightweight_window_summary(days: list[dict], definition: dict, *, allow_part
     expected_dates = _window_expected_dates(definition)
     if not expected_dates:
         return {
-            "status": "UNAVAILABLE",
+            "status": _definition_window_status(definition),
             "start_date": definition.get("start_date"),
             "end_date": definition.get("end_date"),
             "expected_days": 0,
@@ -3100,6 +3153,19 @@ def lightweight_window_summary(days: list[dict], definition: dict, *, allow_part
 
 def aggregate_grid_window(records: list[dict], definition: dict, *, allow_partial: bool = False) -> dict:
     """Aggregate one window over unique grids with equal grid weighting."""
+    if not history_forward_window_applicable(definition):
+        return {
+            "status": HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
+            "start_date": None,
+            "end_date": None,
+            "expected_days": 0,
+            "days_available": 0,
+            "missing_dates": [],
+            "grid_count": 0,
+            "metrics": None,
+            "reason": definition.get("reason") or "WINDOW_AFTER_CUTOFF",
+            "aggregation": None,
+        }
     records = [entry["record"] for entry in deduplicate_grid_records(records)]
     if not records:
         return lightweight_window_summary([], definition, allow_partial=allow_partial) | {
@@ -3214,6 +3280,8 @@ def build_region_history_subregion(
                 definition,
                 allow_partial=False,
             )
+            if not history_forward_window_applicable(definition):
+                continue
             if year_view[key]["status"] != "OK":
                 year_view["status"] = "INVALID"
         years[str(year)] = year_view
@@ -3287,6 +3355,19 @@ def equal_mean_subregion_window(
     *,
     region_id: str = "kanas",
 ) -> dict:
+    if not history_forward_window_applicable(definition):
+        return {
+            "status": HISTORY_FORWARD_WINDOW_NOT_APPLICABLE,
+            "start_date": None,
+            "end_date": None,
+            "expected_days": 0,
+            "days_available": 0,
+            "missing_dates": [],
+            "metrics": None,
+            "reason": definition.get("reason") or "WINDOW_AFTER_CUTOFF",
+            "available_subregions": 0,
+            "expected_subregions": len(items),
+        }
     if not items:
         expected_dates = _window_expected_dates(definition)
         return {
@@ -3411,6 +3492,8 @@ def build_region_history_composite(
                 if subregion_id in subregions
             ]
             year_view[key] = equal_mean_subregion_window(items, definition, region_id=region_id)
+            if not history_forward_window_applicable(definition):
+                continue
             if year_view[key]["status"] != "OK":
                 year_view["status"] = "PARTIAL"
         years[str(year)] = year_view
@@ -3481,6 +3564,10 @@ def run_history_forward(
         raise ValueError("history_forward is an Altay-only module")
     points = active_points(config)
     window_definitions = history_forward_window_definitions(forecast_date)
+    applicable_window_keys = history_forward_applicable_window_keys(window_definitions)
+    windows_closed = not applicable_window_keys
+    if windows_closed:
+        log("HISTORY_FORWARD WINDOWS CLOSED: every rolling window is past the cutoff date")
     regions = {}
     point_results = {}
     all_records = []
@@ -3519,6 +3606,9 @@ def run_history_forward(
                     cache_dir=cache_dir,
                     log_label=f"{point_id}:HISTORY_FORWARD {year}",
                 )
+            # A closed season yields an invalid record with no daily series, while the
+            # year schema still requires the key; publish an explicit empty list.
+            record.setdefault("daily", [])
             record["window_definitions"] = year_windows
             for key, definition in year_windows.items():
                 record[key] = history_forward_window_summary(record.get("daily", []), definition)
@@ -3527,7 +3617,9 @@ def run_history_forward(
                 else:
                     log(f"[{point_id}] HISTORY_FORWARD {year} {key} {record[key]['status']}")
             if record.get("status") != "PASS":
-                for key in year_windows:
+                for key, definition in year_windows.items():
+                    if not history_forward_window_applicable(definition):
+                        continue
                     if record[key]["status"] == "OK":
                         record[key]["status"] = "INVALID"
                         record[key]["usable_for_cross_year_comparison"] = False
@@ -3536,11 +3628,16 @@ def run_history_forward(
             all_records.append(record)
             update_history_cache_stats(cache_stats, record)
         same_grid_qa = history_forward_same_grid_qa(years)
-        windows_ok = all(
-            all(years[str(year)].get(key, {}).get("status") == "OK" for key in HISTORY_FORWARD_WINDOW_KEYS)
+        windows_ok = not windows_closed and all(
+            all(years[str(year)].get(key, {}).get("status") == "OK" for key in applicable_window_keys)
             for year in HISTORY_FORWARD_YEARS
         )
-        point_status = "OK" if same_grid_qa["final_status"] == "PASS" and windows_ok else "FAILED"
+        if windows_closed:
+            point_status = HISTORY_FORWARD_WINDOW_NOT_APPLICABLE
+        elif same_grid_qa["final_status"] == "PASS" and windows_ok:
+            point_status = "OK"
+        else:
+            point_status = "FAILED"
         point_results[point_id] = {
             "point_id": point_id,
             "point": {
@@ -3550,9 +3647,10 @@ def run_history_forward(
                 "subregion": point.get("subregion"),
             },
             "status": point_status,
-            "usable_for_main_chain": True,
+            "usable_for_main_chain": not windows_closed,
             "cross_year_comparison_usable": point_status == "OK",
             "same_grid_qa": same_grid_qa,
+            "reason": HISTORY_FORWARD_WINDOW_CLOSED_REASON if windows_closed else None,
             "years": years,
         }
 
@@ -3576,7 +3674,7 @@ def run_history_forward(
             "region": region_id,
             "core_point_id": core_id,
             "status": core_result["status"],
-            "usable_for_main_chain": True,
+            "usable_for_main_chain": core_result["usable_for_main_chain"],
             "cross_year_comparison_usable": core_result["cross_year_comparison_usable"],
             "same_grid_qa": core_result["same_grid_qa"],
             # Keep the v1.1 core-point paths stable for existing readers.
@@ -3584,7 +3682,11 @@ def run_history_forward(
                 year: compact_history_forward_year(record)
                 for year, record in core_result["years"].items()
             },
-            "reason": None if core_result["status"] == "OK" else "HISTORY_FORWARD_NOT_USABLE",
+            "reason": (
+                None
+                if core_result["status"] == "OK"
+                else core_result.get("reason") or "HISTORY_FORWARD_NOT_USABLE"
+            ),
         }
 
     registered_subregions = {}
@@ -3616,11 +3718,12 @@ def run_history_forward(
             regions[registered_region_id]["subregions"] = subregions
             regions[registered_region_id]["composite"] = composite
             regions[registered_region_id]["subregion_aggregation_status"] = composite["status"]
-            regions[registered_region_id]["status"] = (
-                "FAILED"
-                if regions[registered_region_id]["status"] == "FAILED"
-                else "OK" if composite["status"] == "OK" else "PARTIAL"
-            )
+            if regions[registered_region_id]["status"] != HISTORY_FORWARD_WINDOW_NOT_APPLICABLE:
+                regions[registered_region_id]["status"] = (
+                    "FAILED"
+                    if regions[registered_region_id]["status"] == "FAILED"
+                    else "OK" if composite["status"] == "OK" else "PARTIAL"
+                )
             regions[registered_region_id]["cross_year_comparison_usable"] = composite["cross_year_comparison_usable"]
             regions[registered_region_id]["reason"] = (
                 None
@@ -3632,7 +3735,9 @@ def run_history_forward(
         log(f"[{registered_region_id}/composite] HISTORY_FORWARD {composite['status']}")
 
     enabled_regions = [item for item in regions.values() if item.get("usable_for_main_chain")]
-    if not enabled_regions or any(item.get("status") == "FAILED" for item in enabled_regions):
+    if windows_closed:
+        module_status_value = "SKIPPED"
+    elif not enabled_regions or any(item.get("status") == "FAILED" for item in enabled_regions):
         module_status_value = "FAILED"
     elif any(item.get("status") == "PARTIAL" for item in enabled_regions):
         module_status_value = "PARTIAL"
@@ -3671,9 +3776,9 @@ def run_history_forward(
         points=point_results,
         regions=regions,
         excluded_points=excluded_points(config),
-        successful_fetches=sum(record.get("status") == "PASS" for record in all_records),
-        failed_fetches=sum(record.get("status") != "PASS" for record in all_records),
-        expected_fetches=len(expected_point_ids) * len(HISTORY_FORWARD_YEARS),
+        successful_fetches=0 if windows_closed else sum(record.get("status") == "PASS" for record in all_records),
+        failed_fetches=0 if windows_closed else sum(record.get("status") != "PASS" for record in all_records),
+        expected_fetches=0 if windows_closed else len(expected_point_ids) * len(HISTORY_FORWARD_YEARS),
         partial_points=partial_points,
         kanas_aggregation=aggregation_metadata.get("kanas", {}),
         hemu_aggregation=aggregation_metadata.get("hemu", {}),
@@ -6864,20 +6969,90 @@ def long_range_daily_member_values(hourly: dict) -> tuple[dt.date, dict[int, dic
 
 
 def long_range_horizon_check(daily_by_lead: dict[int, dict[str, dict]]) -> dict:
+    """Judge the usable long-range horizon without failing on the model edge.
+
+    The published 3-day blocks run to D34_D35, but the trailing block needs lead
+    day 35, which only the freshest `ncep_gefs05` long run carries.  The daily
+    run happens before that run is disseminated, so the required coverage is the
+    last block the product reliably populates (D31_D33).  A missing trailing
+    lead day is recorded as an edge shortfall, never as a module failure.
+    """
     leads = sorted(daily_by_lead)
     expected = list(range(0, LONG_RANGE_LEAD_END + 1))
+    required = list(range(0, LONG_RANGE_REQUIRED_LEAD_END + 1))
     contiguous = leads == list(range(leads[0], leads[-1] + 1)) if leads else False
     usable_background = bool(leads) and leads[0] == 0 and contiguous and leads[-1] >= LONG_RANGE_LEAD_START
-    status = "PASS" if leads == expected and all(daily_by_lead[lead] for lead in expected) else "PARTIAL" if usable_background else "FAIL"
+    missing_required = [lead for lead in required if not daily_by_lead.get(lead)]
+    if contiguous and leads and leads[0] == 0 and not missing_required:
+        status = "PASS"
+    elif usable_background:
+        status = "PARTIAL"
+    else:
+        status = "FAIL"
     return {
         "status": status,
         "expected_lead_day_range": [0, LONG_RANGE_LEAD_END],
+        "required_lead_day_range": [0, LONG_RANGE_REQUIRED_LEAD_END],
         "actual_lead_day_range": [leads[0], leads[-1]] if leads else None,
         "actual_lead_days": len(leads),
         "contiguous": contiguous,
         "usable_background_through_lead_day": leads[-1] if usable_background else None,
         "missing_lead_days": [lead for lead in expected if lead not in daily_by_lead],
+        "missing_required_lead_days": missing_required,
+        "edge_shortfall_lead_days": [
+            lead for lead in expected
+            if lead > LONG_RANGE_REQUIRED_LEAD_END and not daily_by_lead.get(lead)
+        ],
+        "required_forecast_days": LONG_RANGE_REQUIRED_LEAD_END + 1,
+        "method": (
+            "requires contiguous lead days 0..%d; lead days %d..%d belong to the trailing 3-day block "
+            "and are published only by the freshest long run" % (
+                LONG_RANGE_REQUIRED_LEAD_END,
+                LONG_RANGE_REQUIRED_LEAD_END + 1,
+                LONG_RANGE_LEAD_END,
+            )
+        ),
     }
+
+
+def long_range_variable_horizon_offenders(
+    member_check: dict,
+    daily_by_lead: dict[int, dict[str, dict]],
+) -> list[str]:
+    """Variables truncated inside the required horizon rather than on the model edge.
+
+    `ncep_gefs05` routinely publishes precipitation and snowfall one 3-day block
+    shorter than temperature, so those variables are commonly edge truncated while
+    temperature still reaches the trailing block.  That is a property of the product,
+    not a data failure: only a variable whose common complete range stops (or starts)
+    inside the required D0..D33 range may downgrade the region.
+    """
+    member_check = member_check or {}
+    availability = member_check.get("variable_availability") or {}
+    truncated = list(member_check.get("edge_truncated_variables") or [])
+    if not truncated:
+        return []
+    dates_by_lead: dict[int, str] = {}
+    for lead, members in (daily_by_lead or {}).items():
+        for day in members.values():
+            if isinstance(day, dict) and day.get("date"):
+                dates_by_lead[lead] = day["date"]
+                break
+    if not dates_by_lead:
+        return truncated
+    origin = dt.date.fromisoformat(dates_by_lead[min(dates_by_lead)])
+    offenders = []
+    for variable in truncated:
+        item = availability.get(variable) or {}
+        first = item.get("first_timestamp")
+        last = item.get("last_timestamp")
+        if isinstance(first, str) and first and parse_local_api_time(first).date() != origin:
+            offenders.append(variable)
+            continue
+        if isinstance(last, str) and last:
+            if (parse_local_api_time(last).date() - origin).days < LONG_RANGE_REQUIRED_LEAD_END:
+                offenders.append(variable)
+    return offenders
 
 
 def long_range_member_window_values(
@@ -7534,7 +7709,8 @@ def run_long_range(
         forecast_horizons.append(horizon_check["actual_lead_days"])
         member_check = record.get("qa", {}).get("long_range_member_check", {})
         member_counts.extend(member_check.get("actual_member_counts_by_variable", {}).values())
-        variable_horizon_partial = bool(member_check.get("edge_truncated_variables"))
+        variable_horizon_offenders = long_range_variable_horizon_offenders(member_check, daily_by_lead)
+        variable_horizon_partial = bool(variable_horizon_offenders)
         reference = run_long_range_reference(
             config,
             point,
@@ -7586,6 +7762,8 @@ def run_long_range(
                 "historical_reference": (reference.get("record") or {}).get("qa"),
                 "grid_scale_class": "coarse_ensemble",
                 "variable_horizon_partial": variable_horizon_partial,
+                "variable_horizon_partial_variables": variable_horizon_offenders,
+                "edge_truncated_variables": list(member_check.get("edge_truncated_variables") or []),
                 "final_status": "PASS" if region_status == "OK" else "PARTIAL",
             },
         }
@@ -7611,9 +7789,10 @@ def run_long_range(
         status = "OK"
     actual_horizon = min(forecast_horizons) if forecast_horizons else None
     actual_members = min(member_counts) if member_counts else None
+    required_delivery_days = LONG_RANGE_REQUIRED_LEAD_END + 1
     horizon_status = (
         "PASS"
-        if actual_horizon is not None and actual_horizon >= LONG_RANGE_REQUESTED_FORECAST_DAYS
+        if actual_horizon is not None and actual_horizon >= required_delivery_days
         else "PARTIAL"
         if actual_horizon and actual_horizon > LONG_RANGE_LEAD_START
         else "FAILED"
@@ -7632,6 +7811,7 @@ def run_long_range(
         ensemble_members=actual_members or LONG_RANGE_ENSEMBLE_MEMBERS,
         expected_ensemble_members=LONG_RANGE_ENSEMBLE_MEMBERS,
         requested_forecast_days=LONG_RANGE_REQUESTED_FORECAST_DAYS,
+        required_forecast_days=required_delivery_days,
         forecast_horizon_days=actual_horizon,
         forecast_lead_days=max(0, (actual_horizon or 1) - 1),
         forecast_horizon_status=horizon_status,
@@ -7646,6 +7826,12 @@ def run_long_range(
         aggregation={
             "type": "fixed_3_day_blocks",
             "lead_day_range": f"D{LONG_RANGE_LEAD_START}_D{LONG_RANGE_LEAD_END}",
+            "required_lead_day_range": f"D{LONG_RANGE_LEAD_START}_D{LONG_RANGE_REQUIRED_LEAD_END}",
+            "edge_blocks": [
+                f"D{start}_D{end}"
+                for start, end in long_range_window_definitions()
+                if end <= LONG_RANGE_LEAD_END and end > LONG_RANGE_REQUIRED_LEAD_END
+            ],
             "windows": [f"D{start}_D{end}" for start, end in long_range_window_definitions()],
             "hourly_values_in_public_artifact": False,
         },
@@ -7729,12 +7915,19 @@ def target_values(record: dict, target_time: str) -> dict:
     return {"status": "PASS", "time": target_time, "values": values}
 
 
+def single_run_cycle_class(init_time: dt.datetime) -> str:
+    """Classify an ECMWF cycle as a full-horizon run or a short run."""
+    return "LONG" if init_time.hour in SINGLE_RUN_LONG_CYCLE_HOURS else "SHORT"
+
+
 def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_date: str, now_utc: dt.datetime) -> dict:
     points = active_points(config)
     now_local = now_utc.astimezone(LOCAL_TZ)
     regions: dict[str, dict] = {}
     successful_run_entries = []
     candidates = candidate_single_runs(now_utc, 8)
+    required_candidates = [value for value in candidates if single_run_cycle_class(value) == "LONG"]
+    short_candidates = [value for value in candidates if single_run_cycle_class(value) == "SHORT"]
     for region_id in core_region_ids(config):
         region_config = config["regions"][region_id]
         core_id = region_config.get("core_point_id")
@@ -7773,12 +7966,18 @@ def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_dat
                 successful_run_entries.append({"region": region_id, "entry": {"init_time": iso_utc(candidate), "target": target}})
             run_entries.append({
                 "init_time": iso_utc(candidate),
+                "cycle_class": single_run_cycle_class(candidate),
                 "status": entry_status,
                 "target_time": target_time,
                 "target": target,
+                "forecast_horizon_hours": len((record.get("hourly") or {}).get("time") or []),
                 "record": record,
             })
         successful = [entry for entry in run_entries if entry["status"] == "PASS"]
+        required_entries = [entry for entry in run_entries if entry["cycle_class"] == "LONG"]
+        short_entries = [entry for entry in run_entries if entry["cycle_class"] == "SHORT"]
+        required_successful = [entry for entry in required_entries if entry["status"] == "PASS"]
+        short_successful = [entry for entry in short_entries if entry["status"] == "PASS"]
         latest_change = {"status": "UNDETERMINED", "value_c": None, "latest_init_time": None, "previous_init_time": None}
         if len(successful) >= 2:
             latest_value = successful[0]["target"]["values"].get("temperature_2m")
@@ -7790,10 +7989,23 @@ def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_dat
                     "value_c": delta,
                     "latest_init_time": successful[0]["init_time"],
                     "previous_init_time": successful[1]["init_time"],
+                    "comparison": "newest_two_successful_runs",
                 }
-        region_status = "OK" if len(successful) == len(candidates) else "FAILED"
+        # Only the 00Z/12Z long cycles are required.  The 06Z/18Z cycles are
+        # short runs that structurally cannot reach a target beyond their own
+        # horizon, so their absence never marks the region as failed.
+        if len(required_successful) == len(required_entries) and required_entries:
+            region_status = "OK"
+            region_reason = None
+        elif len(required_successful) >= SINGLE_RUN_MIN_REQUIRED_RUNS:
+            region_status = "PARTIAL"
+            region_reason = "SINGLE_RUN_LONG_CYCLE_PARTIALLY_DISTRIBUTED"
+        else:
+            region_status = "FAILED"
+            region_reason = "SINGLE_RUN_LONG_CYCLE_UNAVAILABLE"
         regions[region_id] = {
             "status": region_status,
+            "status_reason": region_reason,
             "usable_for_main_chain": True,
             "point_id": core_id,
             "visit_date": visit_date,
@@ -7801,22 +8013,42 @@ def run_single_runs(config: dict, client: ApiClient, generated_at: str, data_dat
             "target_policy": target_policy,
             "run_count_requested": len(candidates),
             "run_count_available": len(successful),
+            "required_run_count_requested": len(required_entries),
+            "required_run_count_available": len(required_successful),
+            "short_run_count_requested": len(short_entries),
+            "short_run_count_available": len(short_successful),
+            "target_reachable_by_short_runs": bool(short_successful),
             "latest_change": latest_change,
             "runs": run_entries,
         }
     status_values = [item["status"] for item in regions.values() if item.get("usable_for_main_chain")]
+    if not status_values or any(value == "FAILED" for value in status_values):
+        module_status = "FAILED"
+    elif any(value == "PARTIAL" for value in status_values):
+        module_status = "PARTIAL"
+    else:
+        module_status = "OK"
     return module_header(
         "single_runs",
         generated_at,
         data_date,
-        "OK" if status_values and all(value == "OK" for value in status_values) else "FAILED",
+        module_status,
         endpoint=OPEN_METEO_ENDPOINTS["single_runs"],
         model="ECMWF IFS HRES 9 km",
         model_id="ecmwf_ifs",
         run_frequency="00, 06, 12, 18 UTC",
         runs_requested=len(candidates),
         runs=[iso_utc(value) for value in candidates],
-        note="Run timestamps are UTC initialization times; API availability follows model distribution delay.",
+        required_cycles=f"{SINGLE_RUN_LONG_CYCLE_HOURS[0]:02d}, {SINGLE_RUN_LONG_CYCLE_HOURS[1]:02d} UTC (full horizon)",
+        short_cycles=f"{SINGLE_RUN_SHORT_CYCLE_HOURS[0]:02d}, {SINGLE_RUN_SHORT_CYCLE_HOURS[1]:02d} UTC (short runs; not required)",
+        required_runs_requested=len(required_candidates),
+        short_runs_requested=len(short_candidates),
+        min_required_runs=SINGLE_RUN_MIN_REQUIRED_RUNS,
+        note=(
+            "Run timestamps are UTC initialization times; API availability follows model distribution delay. "
+            "Only the 00Z/12Z full-horizon cycles are required for the run-to-run drift comparison; the 06Z/18Z "
+            "short cycles cannot reach a target more than about six days out and are reported without penalty."
+        ),
         regions=regions,
         excluded_points=excluded_points(config),
     )
@@ -8122,6 +8354,13 @@ def flattened_lightweight_window(window: dict | None) -> dict:
             output["solar_unit"] = metrics["solar_unit"]
     else:
         output["metrics"] = None
+    if output.get("status") == HISTORY_FORWARD_WINDOW_NOT_APPLICABLE:
+        # The lightweight views consumed by the phenology summary and the compact
+        # region paths only speak OK/PARTIAL/INVALID/UNAVAILABLE.  A structurally
+        # closed rolling window carries no data for those readers, which is exactly
+        # UNAVAILABLE; the original reason stays so callers can still tell a closed
+        # window apart from a failed fetch.
+        output["status"] = "UNAVAILABLE"
     return output
 
 

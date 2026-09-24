@@ -39,7 +39,7 @@
           "start_date": {"type": ["string", "null"], "format": "date"},
           "end_date": {"type": ["string", "null"], "format": "date"},
           "cutoff_date": {"type": "string", "format": "date"},
-          "status": {"type": "string", "enum": ["OK", "UNAVAILABLE"]}
+          "status": {"type": "string", "enum": ["OK", "UNAVAILABLE", "NOT_APPLICABLE"]}
         },
         "additionalProperties": true
       }
@@ -62,7 +62,7 @@
       "type": "object",
       "required": ["status", "start_date", "end_date", "daily", "metrics", "usable_for_cross_year_comparison"],
       "properties": {
-        "status": {"type": "string", "enum": ["OK", "INVALID", "UNAVAILABLE"]},
+        "status": {"type": "string", "enum": ["OK", "INVALID", "UNAVAILABLE", "NOT_APPLICABLE"]},
         "start_date": {"type": ["string", "null"], "format": "date"},
         "end_date": {"type": ["string", "null"], "format": "date"},
         "daily": {"type": "array"},
@@ -91,7 +91,7 @@
       "required": ["point_id", "status", "same_grid_qa", "years"],
       "properties": {
         "point_id": {"type": "string"},
-        "status": {"type": "string", "enum": ["OK", "FAILED"]},
+        "status": {"type": "string", "enum": ["OK", "FAILED", "NOT_APPLICABLE"]},
         "same_grid_qa": {"type": "object"},
         "years": {
           "type": "object",
@@ -105,7 +105,7 @@
       "required": ["region", "status", "usable_for_main_chain", "cross_year_comparison_usable", "same_grid_qa", "years"],
       "properties": {
         "region": {"type": "string"},
-        "status": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "UNAVAILABLE"]},
+        "status": {"type": "string", "enum": ["OK", "PARTIAL", "FAILED", "UNAVAILABLE", "NOT_APPLICABLE"]},
         "usable_for_main_chain": {"type": "boolean"},
         "cross_year_comparison_usable": {"type": "boolean"},
         "same_grid_qa": {"type": ["object", "null"]},
