@@ -3,7 +3,7 @@
   "data_date": "2026-10-05",
   "endpoint": "https://single-runs-api.open-meteo.com/v1/forecast",
   "excluded_points": {},
-  "generated_at": "2026-10-06T00:05:16Z",
+  "generated_at": "2026-10-06T06:24:28Z",
   "hourly_values_omitted": true,
   "min_required_runs": 2,
   "model": "ECMWF IFS HRES 9 km",
@@ -14,10 +14,10 @@
     "erdaoqiao": {
       "latest_change": {
         "comparison": "newest_two_successful_runs",
-        "latest_init_time": "2026-10-05T18:00:00Z",
-        "previous_init_time": "2026-10-05T12:00:00Z",
-        "status": "UP",
-        "value_c": 0.1
+        "latest_init_time": "2026-10-06T00:00:00Z",
+        "previous_init_time": "2026-10-05T18:00:00Z",
+        "status": "DOWN",
+        "value_c": -0.2
       },
       "point_id": "EJ1",
       "required_run_count_available": 4,
@@ -25,6 +25,221 @@
       "run_count_available": 8,
       "run_count_requested": 8,
       "runs": [
+        {
+          "init_time": "2026-10-06T00:00:00Z",
+          "record": {
+            "daily": [
+              {
+                "cloud_cover_high_mean_pct": null,
+                "cloud_cover_low_mean_pct": 0.0,
+                "cloud_cover_mean_pct": 28.067,
+                "cloud_cover_mid_mean_pct": null,
+                "complete": false,
+                "date": "2026-10-06",
+                "dew_point_mean_c": null,
+                "night_min_c": 14.5,
+                "precipitation_mm": 0.0,
+                "precision_class": "native_hourly",
+                "rain_mm": null,
+                "relative_humidity_mean_pct": null,
+                "snowfall_cm": 0.0,
+                "solar_metric": {
+                  "unit": "seconds",
+                  "value": 38685.29,
+                  "variable": "sunshine_duration"
+                },
+                "temperature_max_c": 23.8,
+                "temperature_mean_c": 18.76,
+                "temperature_min_c": 11.0,
+                "wind_direction_mean_deg": null,
+                "wind_direction_member_resultant_length": null,
+                "wind_gust_max_kmh": 31.7,
+                "wind_gust_mean_kmh": 21.987,
+                "wind_speed_mean_kmh": 11.053
+              },
+              {
+                "cloud_cover_high_mean_pct": null,
+                "cloud_cover_low_mean_pct": 0.0,
+                "cloud_cover_mean_pct": 73.25,
+                "cloud_cover_mid_mean_pct": null,
+                "complete": true,
+                "date": "2026-10-07",
+                "dew_point_mean_c": null,
+                "night_min_c": 9.0,
+                "precipitation_mm": 0.0,
+                "precision_class": "native_hourly",
+                "rain_mm": null,
+                "relative_humidity_mean_pct": null,
+                "snowfall_cm": 0.0,
+                "solar_metric": {
+                  "unit": "seconds",
+                  "value": 33694.91,
+                  "variable": "sunshine_duration"
+                },
+                "temperature_max_c": 24.2,
+                "temperature_mean_c": 16.192,
+                "temperature_min_c": 8.6,
+                "wind_direction_mean_deg": null,
+                "wind_direction_member_resultant_length": null,
+                "wind_gust_max_kmh": 32.0,
+                "wind_gust_mean_kmh": 19.087,
+                "wind_speed_mean_kmh": 10.067
+              }
+            ],
+            "degraded_variables": [],
+            "endpoint": "https://single-runs-api.open-meteo.com/v1/forecast",
+            "model": "ECMWF IFS HRES 9 km",
+            "optional_unavailable_variables": [],
+            "optional_variables": [],
+            "point": {
+              "latitude": 41.968333,
+              "longitude": 101.086111,
+              "name": "额济纳二道桥核心",
+              "region": "erdaoqiao",
+              "status": "VERIFIED"
+            },
+            "point_id": "EJ1",
+            "qa": {
+              "array_length_mismatch": [],
+              "coordinate_check": "PASS",
+              "data_check": "PASS",
+              "distance_check": "PASS",
+              "elevation_check": "PASS",
+              "elevation_mode": "native_model_grid",
+              "final_status": "PASS",
+              "forecast_cutoff_applied": true,
+              "forecast_cutoff_date": "2026-10-07",
+              "grid_distance_km": 4.768,
+              "grid_distance_limit_km": 14.0,
+              "horizon_status": "TRUNCATED_EDGE_MISSING",
+              "invalid_timestamp_rows_dropped": [],
+              "leading_missing_rows": 1,
+              "leading_missing_variables": [
+                "precipitation",
+                "snowfall",
+                "sunshine_duration",
+                "wind_gusts_10m"
+              ],
+              "missing_variables": [],
+              "model_check": "PASS",
+              "model_id_check": "PASS",
+              "model_run_initialization": "2026-10-06T00:00:00Z",
+              "null_data_variables": [],
+              "original_timestep_count": 40,
+              "reason": null,
+              "requested_elevation": "nan",
+              "retained_timestep_count": 39,
+              "returned_elevation": 936.0,
+              "rows_before_cutoff": 240,
+              "rows_dropped_after_cutoff": 200,
+              "rows_retained_through_cutoff": 40,
+              "timezone_check": "PASS",
+              "trailing_missing_rows": 0,
+              "trailing_missing_variables": [],
+              "valid": true
+            },
+            "request": {
+              "coordinate": {
+                "latitude": 41.968333,
+                "longitude": 101.086111
+              },
+              "parameters": {
+                "cell_selection": "nearest",
+                "elevation": "nan",
+                "forecast_days": 10,
+                "hourly": "temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
+                "latitude": 41.968333,
+                "longitude": 101.086111,
+                "models": "ecmwf_ifs",
+                "run": "2026-10-06T00:00",
+                "timezone": "Asia/Shanghai"
+              }
+            },
+            "requested_variables": [
+              "temperature_2m",
+              "precipitation",
+              "snowfall",
+              "cloud_cover",
+              "cloud_cover_low",
+              "sunshine_duration",
+              "wind_speed_10m",
+              "wind_gusts_10m"
+            ],
+            "required_unavailable_variables": [],
+            "required_variables": [
+              "temperature_2m",
+              "precipitation",
+              "snowfall",
+              "cloud_cover",
+              "cloud_cover_low",
+              "wind_speed_10m",
+              "wind_gusts_10m"
+            ],
+            "response": {
+              "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-06T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
+              "forecast_cutoff_applied": true,
+              "forecast_cutoff_date": "2026-10-07",
+              "generationtime_ms": 11.826515197753906,
+              "grid_coordinate": {
+                "latitude": 41.933216,
+                "longitude": 101.11919
+              },
+              "horizon_status": "TRUNCATED_EDGE_MISSING",
+              "invalid_timestamp_rows_dropped": [],
+              "leading_missing_rows": 1,
+              "leading_missing_variables": [
+                "precipitation",
+                "snowfall",
+                "sunshine_duration",
+                "wind_gusts_10m"
+              ],
+              "model_run_initialization": "2026-10-06T00:00:00Z",
+              "original_timestep_count": 40,
+              "retained_timestep_count": 39,
+              "retrieval_time": "2026-10-06T06:35:00Z",
+              "returned_elevation": 936.0,
+              "returned_model": null,
+              "returned_model_id": null,
+              "rows_before_cutoff": 240,
+              "rows_dropped_after_cutoff": 200,
+              "rows_retained_through_cutoff": 40,
+              "timezone": "Asia/Shanghai",
+              "trailing_missing_rows": 0,
+              "trailing_missing_variables": [],
+              "utc_offset_seconds": 28800
+            },
+            "solar_variable": "sunshine_duration",
+            "source": "Open-Meteo",
+            "status": "PASS",
+            "unavailable_variables": [],
+            "variable_status": {
+              "cloud_cover": "OK",
+              "cloud_cover_low": "OK",
+              "precipitation": "OK",
+              "snowfall": "OK",
+              "sunshine_duration": "OK",
+              "temperature_2m": "OK",
+              "wind_gusts_10m": "OK",
+              "wind_speed_10m": "OK"
+            }
+          },
+          "status": "PASS",
+          "target": {
+            "status": "PASS",
+            "time": "2026-10-07T05:00",
+            "values": {
+              "cloud_cover": 77,
+              "cloud_cover_low": 0,
+              "precipitation": 0.0,
+              "snowfall": 0.0,
+              "sunshine_duration": 0.0,
+              "temperature_2m": 9.7,
+              "wind_gusts_10m": 11.5,
+              "wind_speed_10m": 6.9
+            }
+          },
+          "target_time": "2026-10-07T05:00"
+        },
         {
           "init_time": "2026-10-05T18:00:00Z",
           "record": {
@@ -179,7 +394,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 8.305191993713379,
+              "generationtime_ms": 0.2969503402709961,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -196,7 +411,7 @@
               "model_run_initialization": "2026-10-05T18:00:00Z",
               "original_timestep_count": 46,
               "retained_timestep_count": 45,
-              "retrieval_time": "2026-10-06T00:18:38Z",
+              "retrieval_time": "2026-10-06T06:35:01Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -422,7 +637,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 1.992940902709961,
+              "generationtime_ms": 1.7275810241699219,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -439,7 +654,7 @@
               "model_run_initialization": "2026-10-05T12:00:00Z",
               "original_timestep_count": 52,
               "retained_timestep_count": 51,
-              "retrieval_time": "2026-10-06T00:18:39Z",
+              "retrieval_time": "2026-10-06T06:35:01Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -665,7 +880,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3075599670410156,
+              "generationtime_ms": 0.27060508728027344,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -682,7 +897,7 @@
               "model_run_initialization": "2026-10-05T06:00:00Z",
               "original_timestep_count": 58,
               "retained_timestep_count": 57,
-              "retrieval_time": "2026-10-06T00:18:39Z",
+              "retrieval_time": "2026-10-06T06:35:02Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -908,7 +1123,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.42808055877685547,
+              "generationtime_ms": 0.34606456756591797,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -925,7 +1140,7 @@
               "model_run_initialization": "2026-10-05T00:00:00Z",
               "original_timestep_count": 64,
               "retained_timestep_count": 63,
-              "retrieval_time": "2026-10-06T00:18:40Z",
+              "retrieval_time": "2026-10-06T06:35:03Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -1151,7 +1366,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3159046173095703,
+              "generationtime_ms": 3.45611572265625,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -1168,7 +1383,7 @@
               "model_run_initialization": "2026-10-04T18:00:00Z",
               "original_timestep_count": 70,
               "retained_timestep_count": 69,
-              "retrieval_time": "2026-10-06T00:18:41Z",
+              "retrieval_time": "2026-10-06T06:35:03Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -1422,7 +1637,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 1.7094612121582031,
+              "generationtime_ms": 1.1658668518066406,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -1439,7 +1654,7 @@
               "model_run_initialization": "2026-10-04T12:00:00Z",
               "original_timestep_count": 76,
               "retained_timestep_count": 75,
-              "retrieval_time": "2026-10-06T00:18:41Z",
+              "retrieval_time": "2026-10-06T06:35:04Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -1693,7 +1908,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 1.2651681900024414,
+              "generationtime_ms": 1.038193702697754,
               "grid_coordinate": {
                 "latitude": 41.933216,
                 "longitude": 101.11919
@@ -1710,7 +1925,7 @@
               "model_run_initialization": "2026-10-04T06:00:00Z",
               "original_timestep_count": 82,
               "retained_timestep_count": 81,
-              "retrieval_time": "2026-10-06T00:18:42Z",
+              "retrieval_time": "2026-10-06T06:35:05Z",
               "returned_elevation": 936.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -1753,76 +1968,45 @@
             }
           },
           "target_time": "2026-10-07T05:00"
-        },
+        }
+      ],
+      "short_run_count_available": 4,
+      "short_run_count_requested": 4,
+      "status": "OK",
+      "status_reason": null,
+      "target_policy": "rolling_plus_3_days_no_visit_date",
+      "target_reachable_by_short_runs": true,
+      "target_time": "2026-10-07T05:00+08:00",
+      "usable_for_main_chain": true,
+      "visit_date": null
+    },
+    "qidaoqiao": {
+      "latest_change": {
+        "comparison": "newest_two_successful_runs",
+        "latest_init_time": "2026-10-06T00:00:00Z",
+        "previous_init_time": "2026-10-05T18:00:00Z",
+        "status": "NO_CHANGE",
+        "value_c": 0.0
+      },
+      "point_id": "EJ3",
+      "required_run_count_available": 4,
+      "required_run_count_requested": 4,
+      "run_count_available": 8,
+      "run_count_requested": 8,
+      "runs": [
         {
-          "init_time": "2026-10-04T00:00:00Z",
+          "init_time": "2026-10-06T00:00:00Z",
           "record": {
             "daily": [
               {
                 "cloud_cover_high_mean_pct": null,
                 "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 39.267,
+                "cloud_cover_mean_pct": 28.4,
                 "cloud_cover_mid_mean_pct": null,
                 "complete": false,
-                "date": "2026-10-04",
-                "dew_point_mean_c": null,
-                "night_min_c": 11.0,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 35330.33,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 17.0,
-                "temperature_mean_c": 13.907,
-                "temperature_min_c": 8.9,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 29.2,
-                "wind_gust_mean_kmh": 19.22,
-                "wind_speed_mean_kmh": 8.633
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 3.083,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
-                "date": "2026-10-05",
-                "dew_point_mean_c": null,
-                "night_min_c": 6.5,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 40732.43,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 21.2,
-                "temperature_mean_c": 13.704,
-                "temperature_min_c": 6.3,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 24.5,
-                "wind_gust_mean_kmh": 16.887,
-                "wind_speed_mean_kmh": 8.037
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 26.542,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
                 "date": "2026-10-06",
                 "dew_point_mean_c": null,
-                "night_min_c": 9.0,
+                "night_min_c": 14.6,
                 "precipitation_mm": 0.0,
                 "precision_class": "native_hourly",
                 "rain_mm": null,
@@ -1830,27 +2014,27 @@
                 "snowfall_cm": 0.0,
                 "solar_metric": {
                   "unit": "seconds",
-                  "value": 40667.79,
+                  "value": 38647.17,
                   "variable": "sunshine_duration"
                 },
-                "temperature_max_c": 23.7,
-                "temperature_mean_c": 15.692,
-                "temperature_min_c": 8.3,
+                "temperature_max_c": 23.5,
+                "temperature_mean_c": 18.567,
+                "temperature_min_c": 10.3,
                 "wind_direction_mean_deg": null,
                 "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 32.8,
-                "wind_gust_mean_kmh": 20.425,
-                "wind_speed_mean_kmh": 10.938
+                "wind_gust_max_kmh": 30.6,
+                "wind_gust_mean_kmh": 20.86,
+                "wind_speed_mean_kmh": 11.313
               },
               {
                 "cloud_cover_high_mean_pct": null,
                 "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 72.292,
+                "cloud_cover_mean_pct": 74.667,
                 "cloud_cover_mid_mean_pct": null,
                 "complete": true,
                 "date": "2026-10-07",
                 "dew_point_mean_c": null,
-                "night_min_c": 8.8,
+                "night_min_c": 9.5,
                 "precipitation_mm": 0.0,
                 "precision_class": "native_hourly",
                 "rain_mm": null,
@@ -1858,17 +2042,17 @@
                 "snowfall_cm": 0.0,
                 "solar_metric": {
                   "unit": "seconds",
-                  "value": 35292.89,
+                  "value": 34638.51,
                   "variable": "sunshine_duration"
                 },
                 "temperature_max_c": 24.3,
-                "temperature_mean_c": 16.1,
-                "temperature_min_c": 7.8,
+                "temperature_mean_c": 16.183,
+                "temperature_min_c": 9.0,
                 "wind_direction_mean_deg": null,
                 "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 32.4,
-                "wind_gust_mean_kmh": 18.371,
-                "wind_speed_mean_kmh": 9.792
+                "wind_gust_max_kmh": 30.2,
+                "wind_gust_mean_kmh": 16.358,
+                "wind_speed_mean_kmh": 9.25
               }
             ],
             "degraded_variables": [],
@@ -1877,13 +2061,13 @@
             "optional_unavailable_variables": [],
             "optional_variables": [],
             "point": {
-              "latitude": 41.968333,
-              "longitude": 101.086111,
-              "name": "额济纳二道桥核心",
-              "region": "erdaoqiao",
+              "latitude": 42.009167,
+              "longitude": 101.231389,
+              "name": "额济纳七道桥核心",
+              "region": "qidaoqiao",
               "status": "VERIFIED"
             },
-            "point_id": "EJ1",
+            "point_id": "EJ3",
             "qa": {
               "array_length_mismatch": [],
               "coordinate_check": "PASS",
@@ -1894,7 +2078,7 @@
               "final_status": "PASS",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "grid_distance_km": 4.768,
+              "grid_distance_km": 2.958,
               "grid_distance_limit_km": 14.0,
               "horizon_status": "TRUNCATED_EDGE_MISSING",
               "invalid_timestamp_rows_dropped": [],
@@ -1908,16 +2092,16 @@
               "missing_variables": [],
               "model_check": "PASS",
               "model_id_check": "PASS",
-              "model_run_initialization": "2026-10-04T00:00:00Z",
+              "model_run_initialization": "2026-10-06T00:00:00Z",
               "null_data_variables": [],
-              "original_timestep_count": 88,
+              "original_timestep_count": 40,
               "reason": null,
               "requested_elevation": "nan",
-              "retained_timestep_count": 87,
-              "returned_elevation": 936.0,
+              "retained_timestep_count": 39,
+              "returned_elevation": 931.0,
               "rows_before_cutoff": 240,
-              "rows_dropped_after_cutoff": 152,
-              "rows_retained_through_cutoff": 88,
+              "rows_dropped_after_cutoff": 200,
+              "rows_retained_through_cutoff": 40,
               "timezone_check": "PASS",
               "trailing_missing_rows": 0,
               "trailing_missing_variables": [],
@@ -1925,18 +2109,18 @@
             },
             "request": {
               "coordinate": {
-                "latitude": 41.968333,
-                "longitude": 101.086111
+                "latitude": 42.009167,
+                "longitude": 101.231389
               },
               "parameters": {
                 "cell_selection": "nearest",
                 "elevation": "nan",
                 "forecast_days": 10,
                 "hourly": "temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
-                "latitude": 41.968333,
-                "longitude": 101.086111,
+                "latitude": 42.009167,
+                "longitude": 101.231389,
                 "models": "ecmwf_ifs",
-                "run": "2026-10-04T00:00",
+                "run": "2026-10-06T00:00",
                 "timezone": "Asia/Shanghai"
               }
             },
@@ -1961,13 +2145,13 @@
               "wind_gusts_10m"
             ],
             "response": {
-              "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=41.968333&longitude=101.086111&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
+              "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-06T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.27620792388916016,
+              "generationtime_ms": 6.966829299926758,
               "grid_coordinate": {
-                "latitude": 41.933216,
-                "longitude": 101.11919
+                "latitude": 42.003513,
+                "longitude": 101.26637
               },
               "horizon_status": "TRUNCATED_EDGE_MISSING",
               "invalid_timestamp_rows_dropped": [],
@@ -1978,16 +2162,16 @@
                 "sunshine_duration",
                 "wind_gusts_10m"
               ],
-              "model_run_initialization": "2026-10-04T00:00:00Z",
-              "original_timestep_count": 88,
-              "retained_timestep_count": 87,
-              "retrieval_time": "2026-10-06T00:18:43Z",
-              "returned_elevation": 936.0,
+              "model_run_initialization": "2026-10-06T00:00:00Z",
+              "original_timestep_count": 40,
+              "retained_timestep_count": 39,
+              "retrieval_time": "2026-10-06T06:35:56Z",
+              "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
               "rows_before_cutoff": 240,
-              "rows_dropped_after_cutoff": 152,
-              "rows_retained_through_cutoff": 88,
+              "rows_dropped_after_cutoff": 200,
+              "rows_retained_through_cutoff": 40,
               "timezone": "Asia/Shanghai",
               "trailing_missing_rows": 0,
               "trailing_missing_variables": [],
@@ -2013,43 +2197,18 @@
             "status": "PASS",
             "time": "2026-10-07T05:00",
             "values": {
-              "cloud_cover": 38,
+              "cloud_cover": 82,
               "cloud_cover_low": 0,
               "precipitation": 0.0,
               "snowfall": 0.0,
               "sunshine_duration": 0.0,
-              "temperature_2m": 9.8,
-              "wind_gusts_10m": 7.2,
-              "wind_speed_10m": 3.8
+              "temperature_2m": 10.0,
+              "wind_gusts_10m": 10.4,
+              "wind_speed_10m": 5.8
             }
           },
           "target_time": "2026-10-07T05:00"
-        }
-      ],
-      "short_run_count_available": 4,
-      "short_run_count_requested": 4,
-      "status": "OK",
-      "status_reason": null,
-      "target_policy": "rolling_plus_3_days_no_visit_date",
-      "target_reachable_by_short_runs": true,
-      "target_time": "2026-10-07T05:00+08:00",
-      "usable_for_main_chain": true,
-      "visit_date": null
-    },
-    "qidaoqiao": {
-      "latest_change": {
-        "comparison": "newest_two_successful_runs",
-        "latest_init_time": "2026-10-05T18:00:00Z",
-        "previous_init_time": "2026-10-05T12:00:00Z",
-        "status": "NO_CHANGE",
-        "value_c": 0.0
-      },
-      "point_id": "EJ3",
-      "required_run_count_available": 4,
-      "required_run_count_requested": 4,
-      "run_count_available": 8,
-      "run_count_requested": 8,
-      "runs": [
+        },
         {
           "init_time": "2026-10-05T18:00:00Z",
           "record": {
@@ -2204,7 +2363,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3076791763305664,
+              "generationtime_ms": 0.2778768539428711,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -2221,7 +2380,7 @@
               "model_run_initialization": "2026-10-05T18:00:00Z",
               "original_timestep_count": 46,
               "retained_timestep_count": 45,
-              "retrieval_time": "2026-10-06T00:19:35Z",
+              "retrieval_time": "2026-10-06T06:35:57Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -2447,7 +2606,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.34224987030029297,
+              "generationtime_ms": 0.28336048126220703,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -2464,7 +2623,7 @@
               "model_run_initialization": "2026-10-05T12:00:00Z",
               "original_timestep_count": 52,
               "retained_timestep_count": 51,
-              "retrieval_time": "2026-10-06T00:19:35Z",
+              "retrieval_time": "2026-10-06T06:35:58Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -2690,7 +2849,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2295970916748047,
+              "generationtime_ms": 0.22351741790771484,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -2707,7 +2866,7 @@
               "model_run_initialization": "2026-10-05T06:00:00Z",
               "original_timestep_count": 58,
               "retained_timestep_count": 57,
-              "retrieval_time": "2026-10-06T00:19:36Z",
+              "retrieval_time": "2026-10-06T06:35:58Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -2933,7 +3092,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3001689910888672,
+              "generationtime_ms": 0.36656856536865234,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -2950,7 +3109,7 @@
               "model_run_initialization": "2026-10-05T00:00:00Z",
               "original_timestep_count": 64,
               "retained_timestep_count": 63,
-              "retrieval_time": "2026-10-06T00:20:23Z",
+              "retrieval_time": "2026-10-06T06:36:45Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -3176,7 +3335,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.6257295608520508,
+              "generationtime_ms": 0.9497404098510742,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -3193,7 +3352,7 @@
               "model_run_initialization": "2026-10-04T18:00:00Z",
               "original_timestep_count": 70,
               "retained_timestep_count": 69,
-              "retrieval_time": "2026-10-06T00:21:10Z",
+              "retrieval_time": "2026-10-06T06:36:46Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -3447,7 +3606,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.32341480255126953,
+              "generationtime_ms": 0.28574466705322266,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -3464,7 +3623,7 @@
               "model_run_initialization": "2026-10-04T12:00:00Z",
               "original_timestep_count": 76,
               "retained_timestep_count": 75,
-              "retrieval_time": "2026-10-06T00:21:10Z",
+              "retrieval_time": "2026-10-06T06:36:46Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -3718,7 +3877,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.6744861602783203,
+              "generationtime_ms": 0.35440921783447266,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.26637
@@ -3735,7 +3894,7 @@
               "model_run_initialization": "2026-10-04T06:00:00Z",
               "original_timestep_count": 82,
               "retained_timestep_count": 81,
-              "retrieval_time": "2026-10-06T00:21:11Z",
+              "retrieval_time": "2026-10-06T06:36:47Z",
               "returned_elevation": 931.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -3778,76 +3937,45 @@
             }
           },
           "target_time": "2026-10-07T05:00"
-        },
+        }
+      ],
+      "short_run_count_available": 4,
+      "short_run_count_requested": 4,
+      "status": "OK",
+      "status_reason": null,
+      "target_policy": "rolling_plus_3_days_no_visit_date",
+      "target_reachable_by_short_runs": true,
+      "target_time": "2026-10-07T05:00+08:00",
+      "usable_for_main_chain": true,
+      "visit_date": null
+    },
+    "sidaoqiao": {
+      "latest_change": {
+        "comparison": "newest_two_successful_runs",
+        "latest_init_time": "2026-10-06T00:00:00Z",
+        "previous_init_time": "2026-10-05T18:00:00Z",
+        "status": "DOWN",
+        "value_c": -0.2
+      },
+      "point_id": "EJ2",
+      "required_run_count_available": 4,
+      "required_run_count_requested": 4,
+      "run_count_available": 8,
+      "run_count_requested": 8,
+      "runs": [
         {
-          "init_time": "2026-10-04T00:00:00Z",
+          "init_time": "2026-10-06T00:00:00Z",
           "record": {
             "daily": [
               {
                 "cloud_cover_high_mean_pct": null,
                 "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 38.6,
+                "cloud_cover_mean_pct": 30.667,
                 "cloud_cover_mid_mean_pct": null,
                 "complete": false,
-                "date": "2026-10-04",
-                "dew_point_mean_c": null,
-                "night_min_c": 11.1,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 38283.11,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 17.2,
-                "temperature_mean_c": 13.947,
-                "temperature_min_c": 7.9,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 27.0,
-                "wind_gust_mean_kmh": 20.747,
-                "wind_speed_mean_kmh": 10.953
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 3.083,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
-                "date": "2026-10-05",
-                "dew_point_mean_c": null,
-                "night_min_c": 6.9,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 40994.4,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 20.8,
-                "temperature_mean_c": 13.471,
-                "temperature_min_c": 6.6,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 24.1,
-                "wind_gust_mean_kmh": 16.008,
-                "wind_speed_mean_kmh": 8.321
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 28.833,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
                 "date": "2026-10-06",
                 "dew_point_mean_c": null,
-                "night_min_c": 8.8,
+                "night_min_c": 14.2,
                 "precipitation_mm": 0.0,
                 "precision_class": "native_hourly",
                 "rain_mm": null,
@@ -3855,27 +3983,27 @@
                 "snowfall_cm": 0.0,
                 "solar_metric": {
                   "unit": "seconds",
-                  "value": 40617.34,
+                  "value": 38678.61,
                   "variable": "sunshine_duration"
                 },
-                "temperature_max_c": 23.3,
-                "temperature_mean_c": 15.604,
-                "temperature_min_c": 8.3,
+                "temperature_max_c": 23.7,
+                "temperature_mean_c": 18.687,
+                "temperature_min_c": 11.1,
                 "wind_direction_mean_deg": null,
                 "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 31.3,
-                "wind_gust_mean_kmh": 19.492,
-                "wind_speed_mean_kmh": 11.442
+                "wind_gust_max_kmh": 33.5,
+                "wind_gust_mean_kmh": 21.347,
+                "wind_speed_mean_kmh": 10.18
               },
               {
                 "cloud_cover_high_mean_pct": null,
                 "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 72.25,
+                "cloud_cover_mean_pct": 74.875,
                 "cloud_cover_mid_mean_pct": null,
                 "complete": true,
                 "date": "2026-10-07",
                 "dew_point_mean_c": null,
-                "night_min_c": 9.3,
+                "night_min_c": 8.7,
                 "precipitation_mm": 0.0,
                 "precision_class": "native_hourly",
                 "rain_mm": null,
@@ -3883,17 +4011,17 @@
                 "snowfall_cm": 0.0,
                 "solar_metric": {
                   "unit": "seconds",
-                  "value": 34911.7,
+                  "value": 32543.78,
                   "variable": "sunshine_duration"
                 },
                 "temperature_max_c": 24.4,
-                "temperature_mean_c": 16.046,
-                "temperature_min_c": 8.3,
+                "temperature_mean_c": 15.958,
+                "temperature_min_c": 8.0,
                 "wind_direction_mean_deg": null,
                 "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 29.5,
-                "wind_gust_mean_kmh": 15.008,
-                "wind_speed_mean_kmh": 8.458
+                "wind_gust_max_kmh": 34.6,
+                "wind_gust_mean_kmh": 18.304,
+                "wind_speed_mean_kmh": 9.558
               }
             ],
             "degraded_variables": [],
@@ -3902,13 +4030,13 @@
             "optional_unavailable_variables": [],
             "optional_variables": [],
             "point": {
-              "latitude": 42.009167,
-              "longitude": 101.231389,
-              "name": "额济纳七道桥核心",
-              "region": "qidaoqiao",
+              "latitude": 42.0012,
+              "longitude": 101.1374,
+              "name": "额济纳四道桥核心",
+              "region": "sidaoqiao",
               "status": "VERIFIED"
             },
-            "point_id": "EJ3",
+            "point_id": "EJ2",
             "qa": {
               "array_length_mismatch": [],
               "coordinate_check": "PASS",
@@ -3919,7 +4047,7 @@
               "final_status": "PASS",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "grid_distance_km": 2.958,
+              "grid_distance_km": 0.307,
               "grid_distance_limit_km": 14.0,
               "horizon_status": "TRUNCATED_EDGE_MISSING",
               "invalid_timestamp_rows_dropped": [],
@@ -3933,16 +4061,16 @@
               "missing_variables": [],
               "model_check": "PASS",
               "model_id_check": "PASS",
-              "model_run_initialization": "2026-10-04T00:00:00Z",
+              "model_run_initialization": "2026-10-06T00:00:00Z",
               "null_data_variables": [],
-              "original_timestep_count": 88,
+              "original_timestep_count": 40,
               "reason": null,
               "requested_elevation": "nan",
-              "retained_timestep_count": 87,
-              "returned_elevation": 931.0,
+              "retained_timestep_count": 39,
+              "returned_elevation": 934.0,
               "rows_before_cutoff": 240,
-              "rows_dropped_after_cutoff": 152,
-              "rows_retained_through_cutoff": 88,
+              "rows_dropped_after_cutoff": 200,
+              "rows_retained_through_cutoff": 40,
               "timezone_check": "PASS",
               "trailing_missing_rows": 0,
               "trailing_missing_variables": [],
@@ -3950,18 +4078,18 @@
             },
             "request": {
               "coordinate": {
-                "latitude": 42.009167,
-                "longitude": 101.231389
+                "latitude": 42.0012,
+                "longitude": 101.1374
               },
               "parameters": {
                 "cell_selection": "nearest",
                 "elevation": "nan",
                 "forecast_days": 10,
                 "hourly": "temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
-                "latitude": 42.009167,
-                "longitude": 101.231389,
+                "latitude": 42.0012,
+                "longitude": 101.1374,
                 "models": "ecmwf_ifs",
-                "run": "2026-10-04T00:00",
+                "run": "2026-10-06T00:00",
                 "timezone": "Asia/Shanghai"
               }
             },
@@ -3986,13 +4114,13 @@
               "wind_gusts_10m"
             ],
             "response": {
-              "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.009167&longitude=101.231389&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
+              "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-06T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.2963542938232422,
+              "generationtime_ms": 19.856572151184082,
               "grid_coordinate": {
                 "latitude": 42.003513,
-                "longitude": 101.26637
+                "longitude": 101.13537
               },
               "horizon_status": "TRUNCATED_EDGE_MISSING",
               "invalid_timestamp_rows_dropped": [],
@@ -4003,16 +4131,16 @@
                 "sunshine_duration",
                 "wind_gusts_10m"
               ],
-              "model_run_initialization": "2026-10-04T00:00:00Z",
-              "original_timestep_count": 88,
-              "retained_timestep_count": 87,
-              "retrieval_time": "2026-10-06T00:21:12Z",
-              "returned_elevation": 931.0,
+              "model_run_initialization": "2026-10-06T00:00:00Z",
+              "original_timestep_count": 40,
+              "retained_timestep_count": 39,
+              "retrieval_time": "2026-10-06T06:35:05Z",
+              "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
               "rows_before_cutoff": 240,
-              "rows_dropped_after_cutoff": 152,
-              "rows_retained_through_cutoff": 88,
+              "rows_dropped_after_cutoff": 200,
+              "rows_retained_through_cutoff": 40,
               "timezone": "Asia/Shanghai",
               "trailing_missing_rows": 0,
               "trailing_missing_variables": [],
@@ -4038,43 +4166,18 @@
             "status": "PASS",
             "time": "2026-10-07T05:00",
             "values": {
-              "cloud_cover": 40,
+              "cloud_cover": 80,
               "cloud_cover_low": 0,
               "precipitation": 0.0,
               "snowfall": 0.0,
               "sunshine_duration": 0.0,
-              "temperature_2m": 10.2,
-              "wind_gusts_10m": 7.2,
-              "wind_speed_10m": 3.5
+              "temperature_2m": 9.3,
+              "wind_gusts_10m": 8.3,
+              "wind_speed_10m": 5.9
             }
           },
           "target_time": "2026-10-07T05:00"
-        }
-      ],
-      "short_run_count_available": 4,
-      "short_run_count_requested": 4,
-      "status": "OK",
-      "status_reason": null,
-      "target_policy": "rolling_plus_3_days_no_visit_date",
-      "target_reachable_by_short_runs": true,
-      "target_time": "2026-10-07T05:00+08:00",
-      "usable_for_main_chain": true,
-      "visit_date": null
-    },
-    "sidaoqiao": {
-      "latest_change": {
-        "comparison": "newest_two_successful_runs",
-        "latest_init_time": "2026-10-05T18:00:00Z",
-        "previous_init_time": "2026-10-05T12:00:00Z",
-        "status": "UP",
-        "value_c": 0.1
-      },
-      "point_id": "EJ2",
-      "required_run_count_available": 4,
-      "required_run_count_requested": 4,
-      "run_count_available": 8,
-      "run_count_requested": 8,
-      "runs": [
+        },
         {
           "init_time": "2026-10-05T18:00:00Z",
           "record": {
@@ -4229,7 +4332,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 8.202314376831055,
+              "generationtime_ms": 0.2485513687133789,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -4246,7 +4349,7 @@
               "model_run_initialization": "2026-10-05T18:00:00Z",
               "original_timestep_count": 46,
               "retained_timestep_count": 45,
-              "retrieval_time": "2026-10-06T00:18:43Z",
+              "retrieval_time": "2026-10-06T06:35:06Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -4472,7 +4575,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 11.643648147583008,
+              "generationtime_ms": 1.4740228652954102,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -4489,7 +4592,7 @@
               "model_run_initialization": "2026-10-05T12:00:00Z",
               "original_timestep_count": 52,
               "retained_timestep_count": 51,
-              "retrieval_time": "2026-10-06T00:19:30Z",
+              "retrieval_time": "2026-10-06T06:35:53Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -4715,7 +4818,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 1.250624656677246,
+              "generationtime_ms": 1.0647773742675781,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -4732,7 +4835,7 @@
               "model_run_initialization": "2026-10-05T06:00:00Z",
               "original_timestep_count": 58,
               "retained_timestep_count": 57,
-              "retrieval_time": "2026-10-06T00:19:31Z",
+              "retrieval_time": "2026-10-06T06:35:53Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -4958,7 +5061,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-05T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3961324691772461,
+              "generationtime_ms": 0.2841949462890625,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -4975,7 +5078,7 @@
               "model_run_initialization": "2026-10-05T00:00:00Z",
               "original_timestep_count": 64,
               "retained_timestep_count": 63,
-              "retrieval_time": "2026-10-06T00:19:32Z",
+              "retrieval_time": "2026-10-06T06:35:54Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5201,7 +5304,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T18%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.25856494903564453,
+              "generationtime_ms": 0.24509429931640625,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -5218,7 +5321,7 @@
               "model_run_initialization": "2026-10-04T18:00:00Z",
               "original_timestep_count": 70,
               "retained_timestep_count": 69,
-              "retrieval_time": "2026-10-06T00:19:32Z",
+              "retrieval_time": "2026-10-06T06:35:55Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5472,7 +5575,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T12%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.3376007080078125,
+              "generationtime_ms": 0.2917051315307617,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -5489,7 +5592,7 @@
               "model_run_initialization": "2026-10-04T12:00:00Z",
               "original_timestep_count": 76,
               "retained_timestep_count": 75,
-              "retrieval_time": "2026-10-06T00:19:33Z",
+              "retrieval_time": "2026-10-06T06:35:55Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5743,7 +5846,7 @@
               "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T06%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
               "forecast_cutoff_applied": true,
               "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.5967617034912109,
+              "generationtime_ms": 0.26428699493408203,
               "grid_coordinate": {
                 "latitude": 42.003513,
                 "longitude": 101.13537
@@ -5760,7 +5863,7 @@
               "model_run_initialization": "2026-10-04T06:00:00Z",
               "original_timestep_count": 82,
               "retained_timestep_count": 81,
-              "retrieval_time": "2026-10-06T00:19:33Z",
+              "retrieval_time": "2026-10-06T06:35:56Z",
               "returned_elevation": 934.0,
               "returned_model": null,
               "returned_model_id": null,
@@ -5803,277 +5906,6 @@
             }
           },
           "target_time": "2026-10-07T05:00"
-        },
-        {
-          "init_time": "2026-10-04T00:00:00Z",
-          "record": {
-            "daily": [
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 36.267,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": false,
-                "date": "2026-10-04",
-                "dew_point_mean_c": null,
-                "night_min_c": 11.0,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 36951.61,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 17.2,
-                "temperature_mean_c": 14.14,
-                "temperature_min_c": 9.3,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 29.2,
-                "wind_gust_mean_kmh": 20.86,
-                "wind_speed_mean_kmh": 9.507
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 3.667,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
-                "date": "2026-10-05",
-                "dew_point_mean_c": null,
-                "night_min_c": 6.5,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 40728.78,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 21.3,
-                "temperature_mean_c": 13.713,
-                "temperature_min_c": 6.3,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 24.5,
-                "wind_gust_mean_kmh": 16.65,
-                "wind_speed_mean_kmh": 7.608
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 29.292,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
-                "date": "2026-10-06",
-                "dew_point_mean_c": null,
-                "night_min_c": 9.1,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 40664.09,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 23.6,
-                "temperature_mean_c": 15.692,
-                "temperature_min_c": 8.6,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 33.5,
-                "wind_gust_mean_kmh": 20.404,
-                "wind_speed_mean_kmh": 10.692
-              },
-              {
-                "cloud_cover_high_mean_pct": null,
-                "cloud_cover_low_mean_pct": 0.0,
-                "cloud_cover_mean_pct": 72.667,
-                "cloud_cover_mid_mean_pct": null,
-                "complete": true,
-                "date": "2026-10-07",
-                "dew_point_mean_c": null,
-                "night_min_c": 8.0,
-                "precipitation_mm": 0.0,
-                "precision_class": "native_hourly",
-                "rain_mm": null,
-                "relative_humidity_mean_pct": null,
-                "snowfall_cm": 0.0,
-                "solar_metric": {
-                  "unit": "seconds",
-                  "value": 35255.59,
-                  "variable": "sunshine_duration"
-                },
-                "temperature_max_c": 24.4,
-                "temperature_mean_c": 15.825,
-                "temperature_min_c": 7.0,
-                "wind_direction_mean_deg": null,
-                "wind_direction_member_resultant_length": null,
-                "wind_gust_max_kmh": 33.8,
-                "wind_gust_mean_kmh": 17.496,
-                "wind_speed_mean_kmh": 9.092
-              }
-            ],
-            "degraded_variables": [],
-            "endpoint": "https://single-runs-api.open-meteo.com/v1/forecast",
-            "model": "ECMWF IFS HRES 9 km",
-            "optional_unavailable_variables": [],
-            "optional_variables": [],
-            "point": {
-              "latitude": 42.0012,
-              "longitude": 101.1374,
-              "name": "额济纳四道桥核心",
-              "region": "sidaoqiao",
-              "status": "VERIFIED"
-            },
-            "point_id": "EJ2",
-            "qa": {
-              "array_length_mismatch": [],
-              "coordinate_check": "PASS",
-              "data_check": "PASS",
-              "distance_check": "PASS",
-              "elevation_check": "PASS",
-              "elevation_mode": "native_model_grid",
-              "final_status": "PASS",
-              "forecast_cutoff_applied": true,
-              "forecast_cutoff_date": "2026-10-07",
-              "grid_distance_km": 0.307,
-              "grid_distance_limit_km": 14.0,
-              "horizon_status": "TRUNCATED_EDGE_MISSING",
-              "invalid_timestamp_rows_dropped": [],
-              "leading_missing_rows": 1,
-              "leading_missing_variables": [
-                "precipitation",
-                "snowfall",
-                "sunshine_duration",
-                "wind_gusts_10m"
-              ],
-              "missing_variables": [],
-              "model_check": "PASS",
-              "model_id_check": "PASS",
-              "model_run_initialization": "2026-10-04T00:00:00Z",
-              "null_data_variables": [],
-              "original_timestep_count": 88,
-              "reason": null,
-              "requested_elevation": "nan",
-              "retained_timestep_count": 87,
-              "returned_elevation": 934.0,
-              "rows_before_cutoff": 240,
-              "rows_dropped_after_cutoff": 152,
-              "rows_retained_through_cutoff": 88,
-              "timezone_check": "PASS",
-              "trailing_missing_rows": 0,
-              "trailing_missing_variables": [],
-              "valid": true
-            },
-            "request": {
-              "coordinate": {
-                "latitude": 42.0012,
-                "longitude": 101.1374
-              },
-              "parameters": {
-                "cell_selection": "nearest",
-                "elevation": "nan",
-                "forecast_days": 10,
-                "hourly": "temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
-                "latitude": 42.0012,
-                "longitude": 101.1374,
-                "models": "ecmwf_ifs",
-                "run": "2026-10-04T00:00",
-                "timezone": "Asia/Shanghai"
-              }
-            },
-            "requested_variables": [
-              "temperature_2m",
-              "precipitation",
-              "snowfall",
-              "cloud_cover",
-              "cloud_cover_low",
-              "sunshine_duration",
-              "wind_speed_10m",
-              "wind_gusts_10m"
-            ],
-            "required_unavailable_variables": [],
-            "required_variables": [
-              "temperature_2m",
-              "precipitation",
-              "snowfall",
-              "cloud_cover",
-              "cloud_cover_low",
-              "wind_speed_10m",
-              "wind_gusts_10m"
-            ],
-            "response": {
-              "endpoint_url": "https://single-runs-api.open-meteo.com/v1/forecast?latitude=42.0012&longitude=101.1374&timezone=Asia%2FShanghai&cell_selection=nearest&elevation=nan&models=ecmwf_ifs&run=2026-10-04T00%3A00&forecast_days=10&hourly=temperature_2m%2Cprecipitation%2Csnowfall%2Ccloud_cover%2Ccloud_cover_low%2Csunshine_duration%2Cwind_speed_10m%2Cwind_gusts_10m",
-              "forecast_cutoff_applied": true,
-              "forecast_cutoff_date": "2026-10-07",
-              "generationtime_ms": 0.4354715347290039,
-              "grid_coordinate": {
-                "latitude": 42.003513,
-                "longitude": 101.13537
-              },
-              "horizon_status": "TRUNCATED_EDGE_MISSING",
-              "invalid_timestamp_rows_dropped": [],
-              "leading_missing_rows": 1,
-              "leading_missing_variables": [
-                "precipitation",
-                "snowfall",
-                "sunshine_duration",
-                "wind_gusts_10m"
-              ],
-              "model_run_initialization": "2026-10-04T00:00:00Z",
-              "original_timestep_count": 88,
-              "retained_timestep_count": 87,
-              "retrieval_time": "2026-10-06T00:19:34Z",
-              "returned_elevation": 934.0,
-              "returned_model": null,
-              "returned_model_id": null,
-              "rows_before_cutoff": 240,
-              "rows_dropped_after_cutoff": 152,
-              "rows_retained_through_cutoff": 88,
-              "timezone": "Asia/Shanghai",
-              "trailing_missing_rows": 0,
-              "trailing_missing_variables": [],
-              "utc_offset_seconds": 28800
-            },
-            "solar_variable": "sunshine_duration",
-            "source": "Open-Meteo",
-            "status": "PASS",
-            "unavailable_variables": [],
-            "variable_status": {
-              "cloud_cover": "OK",
-              "cloud_cover_low": "OK",
-              "precipitation": "OK",
-              "snowfall": "OK",
-              "sunshine_duration": "OK",
-              "temperature_2m": "OK",
-              "wind_gusts_10m": "OK",
-              "wind_speed_10m": "OK"
-            }
-          },
-          "status": "PASS",
-          "target": {
-            "status": "PASS",
-            "time": "2026-10-07T05:00",
-            "values": {
-              "cloud_cover": 41,
-              "cloud_cover_low": 0,
-              "precipitation": 0.0,
-              "snowfall": 0.0,
-              "sunshine_duration": 0.0,
-              "temperature_2m": 9.1,
-              "wind_gusts_10m": 5.4,
-              "wind_speed_10m": 3.4
-            }
-          },
-          "target_time": "2026-10-07T05:00"
         }
       ],
       "short_run_count_available": 4,
@@ -6091,14 +5923,14 @@
   "required_runs_requested": 4,
   "run_frequency": "00, 06, 12, 18 UTC",
   "runs": [
+    "2026-10-06T00:00:00Z",
     "2026-10-05T18:00:00Z",
     "2026-10-05T12:00:00Z",
     "2026-10-05T06:00:00Z",
     "2026-10-05T00:00:00Z",
     "2026-10-04T18:00:00Z",
     "2026-10-04T12:00:00Z",
-    "2026-10-04T06:00:00Z",
-    "2026-10-04T00:00:00Z"
+    "2026-10-04T06:00:00Z"
   ],
   "runs_requested": 8,
   "schema_version": "1.4.0",
