@@ -1,5 +1,5 @@
 {
-  "data_date": "2026-10-23",
+  "data_date": "2026-10-24",
   "endpoint": "https://api.open-meteo.com/v1/ecmwf",
   "excluded_points": {
     "AHE_ROAD_G681": {
@@ -57,25 +57,17 @@
       "usable_for_main_chain": false
     }
   },
-  "generated_at": "2026-10-24T15:59:22Z",
+  "generated_at": "2026-10-24T20:52:58Z",
   "model": "ECMWF IFS HRES 9 km",
   "module": "spatial_sampling",
   "regions": {
     "baihaba": {
       "analysis_window": {
         "days": 7,
-        "start": "2026-10-24"
+        "start": "2026-10-25"
       },
       "cold_pool_coverage": {
         "by_date": [
-          {
-            "cold_cells": 4,
-            "coverage_ratio": 1.0,
-            "date": "2026-10-24",
-            "label": "widespread",
-            "threshold": "night_min_c < 5",
-            "total_cells": 4
-          },
           {
             "cold_cells": 5,
             "coverage_ratio": 1.0,
@@ -123,11 +115,19 @@
             "label": "widespread",
             "threshold": "night_min_c < 5",
             "total_cells": 5
+          },
+          {
+            "cold_cells": 5,
+            "coverage_ratio": 1.0,
+            "date": "2026-10-31",
+            "label": "widespread",
+            "threshold": "night_min_c < 5",
+            "total_cells": 5
           }
         ],
         "next_7d": {
-          "cell_observations": 34,
-          "cold_cell_observations": 34,
+          "cell_observations": 35,
+          "cold_cell_observations": 35,
           "cold_cells": 5,
           "coverage_ratio": 1.0,
           "label": "widespread",
@@ -143,34 +143,6 @@
       "samples": [
         {
           "daily": [
-            {
-              "cloud_cover_high_mean_pct": 15.208,
-              "cloud_cover_low_mean_pct": 78.833,
-              "cloud_cover_mean_pct": 89.708,
-              "cloud_cover_mid_mean_pct": 75.25,
-              "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": -12.104,
-              "night_min_c": -13.9,
-              "precipitation_mm": 4.5,
-              "precision_class": "native_hourly",
-              "rain_mm": 0.0,
-              "relative_humidity_mean_pct": 81.167,
-              "snowfall_cm": 3.15,
-              "solar_metric": {
-                "unit": "seconds",
-                "value": 32284.26,
-                "variable": "sunshine_duration"
-              },
-              "temperature_max_c": -6.9,
-              "temperature_mean_c": -9.379,
-              "temperature_min_c": -13.9,
-              "wind_direction_mean_deg": 152.976,
-              "wind_direction_member_resultant_length": 0.589,
-              "wind_gust_max_kmh": 24.8,
-              "wind_gust_mean_kmh": 10.754,
-              "wind_speed_mean_kmh": 2.942
-            },
             {
               "cloud_cover_high_mean_pct": 0.25,
               "cloud_cover_low_mean_pct": 20.042,
@@ -237,7 +209,7 @@
               "dew_point_mean_c": -14.8,
               "night_min_c": -12.9,
               "precipitation_mm": 0.0,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 57.333,
               "snowfall_cm": 0.0,
@@ -265,7 +237,7 @@
               "dew_point_mean_c": -14.588,
               "night_min_c": -13.2,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 54.125,
               "snowfall_cm": 0.0,
@@ -321,7 +293,7 @@
               "dew_point_mean_c": -7.3,
               "night_min_c": -8.3,
               "precipitation_mm": 3.0,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": 0.9,
               "relative_humidity_mean_pct": 84.25,
               "snowfall_cm": 1.68,
@@ -562,6 +534,34 @@
               "wind_gust_max_kmh": 16.2,
               "wind_gust_mean_kmh": 12.792,
               "wind_speed_mean_kmh": 2.888
+            },
+            {
+              "cloud_cover_high_mean_pct": 0.0,
+              "cloud_cover_low_mean_pct": 0.0,
+              "cloud_cover_mean_pct": 0.0,
+              "cloud_cover_mid_mean_pct": 0.0,
+              "complete": false,
+              "date": "2026-11-08",
+              "dew_point_mean_c": -23.567,
+              "night_min_c": -17.2,
+              "precipitation_mm": 0.0,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": 0.0,
+              "relative_humidity_mean_pct": 55.889,
+              "snowfall_cm": 0.0,
+              "solar_metric": {
+                "unit": "seconds",
+                "value": 0.0,
+                "variable": "sunshine_duration"
+              },
+              "temperature_max_c": -15.7,
+              "temperature_mean_c": -16.811,
+              "temperature_min_c": -17.2,
+              "wind_direction_mean_deg": 117.111,
+              "wind_direction_member_resultant_length": 0.999,
+              "wind_gust_max_kmh": 13.7,
+              "wind_gust_mean_kmh": 13.433,
+              "wind_speed_mean_kmh": 3.789
             }
           ],
           "direction": "CORE",
@@ -581,7 +581,7 @@
             "forecast_cutoff_date": null,
             "grid_distance_km": 6.514,
             "grid_distance_limit_km": 14.0,
-            "horizon_status": "COMPLETE",
+            "horizon_status": "TRUNCATED_EDGE_MISSING",
             "leading_missing_rows": 0,
             "leading_missing_variables": [],
             "missing_variables": [],
@@ -592,12 +592,19 @@
             "original_timestep_count": 360,
             "reason": null,
             "requested_elevation": "nan",
-            "retained_timestep_count": 360,
+            "retained_timestep_count": 345,
             "returned_elevation": 1664.0,
             "rows_dropped_after_cutoff": 0,
             "timezone_check": "PASS",
-            "trailing_missing_rows": 0,
-            "trailing_missing_variables": [],
+            "trailing_missing_rows": 15,
+            "trailing_missing_variables": [
+              "cloud_cover",
+              "precipitation",
+              "snowfall",
+              "sunshine_duration",
+              "temperature_2m",
+              "wind_gusts_10m"
+            ],
             "valid": true
           },
           "requested_coordinate": {
@@ -615,30 +622,6 @@
         },
         {
           "daily": [
-            {
-              "cloud_cover_high_mean_pct": null,
-              "cloud_cover_low_mean_pct": null,
-              "cloud_cover_mean_pct": null,
-              "cloud_cover_mid_mean_pct": null,
-              "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": null,
-              "night_min_c": -13.9,
-              "precipitation_mm": 4.5,
-              "precision_class": "native_hourly",
-              "rain_mm": null,
-              "relative_humidity_mean_pct": null,
-              "snowfall_cm": 3.15,
-              "solar_metric": null,
-              "temperature_max_c": -6.9,
-              "temperature_mean_c": -9.379,
-              "temperature_min_c": -13.9,
-              "wind_direction_mean_deg": null,
-              "wind_direction_member_resultant_length": null,
-              "wind_gust_max_kmh": 24.8,
-              "wind_gust_mean_kmh": 10.754,
-              "wind_speed_mean_kmh": null
-            },
             {
               "cloud_cover_high_mean_pct": null,
               "cloud_cover_low_mean_pct": null,
@@ -697,7 +680,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -12.9,
               "precipitation_mm": 0.0,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -721,7 +704,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -13.2,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -769,7 +752,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -8.3,
               "precipitation_mm": 3.0,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 1.68,
@@ -781,6 +764,30 @@
               "wind_direction_member_resultant_length": null,
               "wind_gust_max_kmh": 25.2,
               "wind_gust_mean_kmh": 16.408,
+              "wind_speed_mean_kmh": null
+            },
+            {
+              "cloud_cover_high_mean_pct": null,
+              "cloud_cover_low_mean_pct": null,
+              "cloud_cover_mean_pct": null,
+              "cloud_cover_mid_mean_pct": null,
+              "complete": true,
+              "date": "2026-10-31",
+              "dew_point_mean_c": null,
+              "night_min_c": -10.8,
+              "precipitation_mm": 0.0,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": null,
+              "relative_humidity_mean_pct": null,
+              "snowfall_cm": 0.0,
+              "solar_metric": null,
+              "temperature_max_c": -1.9,
+              "temperature_mean_c": -6.479,
+              "temperature_min_c": -10.8,
+              "wind_direction_mean_deg": null,
+              "wind_direction_member_resultant_length": null,
+              "wind_gust_max_kmh": 16.2,
+              "wind_gust_mean_kmh": 12.425,
               "wind_speed_mean_kmh": null
             }
           ],
@@ -841,30 +848,6 @@
               "cloud_cover_mean_pct": null,
               "cloud_cover_mid_mean_pct": null,
               "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": null,
-              "night_min_c": -11.7,
-              "precipitation_mm": 2.7,
-              "precision_class": "native_hourly",
-              "rain_mm": null,
-              "relative_humidity_mean_pct": null,
-              "snowfall_cm": 1.89,
-              "solar_metric": null,
-              "temperature_max_c": -7.5,
-              "temperature_mean_c": -8.637,
-              "temperature_min_c": -11.7,
-              "wind_direction_mean_deg": null,
-              "wind_direction_member_resultant_length": null,
-              "wind_gust_max_kmh": 19.8,
-              "wind_gust_mean_kmh": 14.746,
-              "wind_speed_mean_kmh": null
-            },
-            {
-              "cloud_cover_high_mean_pct": null,
-              "cloud_cover_low_mean_pct": null,
-              "cloud_cover_mean_pct": null,
-              "cloud_cover_mid_mean_pct": null,
-              "complete": true,
               "date": "2026-10-25",
               "dew_point_mean_c": null,
               "night_min_c": -14.7,
@@ -917,7 +900,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -9.3,
               "precipitation_mm": -0.3,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -941,7 +924,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -9.4,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -989,7 +972,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -6.3,
               "precipitation_mm": 3.3,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 1.68,
@@ -1001,6 +984,30 @@
               "wind_direction_member_resultant_length": null,
               "wind_gust_max_kmh": 20.2,
               "wind_gust_mean_kmh": 13.817,
+              "wind_speed_mean_kmh": null
+            },
+            {
+              "cloud_cover_high_mean_pct": null,
+              "cloud_cover_low_mean_pct": null,
+              "cloud_cover_mean_pct": null,
+              "cloud_cover_mid_mean_pct": null,
+              "complete": true,
+              "date": "2026-10-31",
+              "dew_point_mean_c": null,
+              "night_min_c": -7.3,
+              "precipitation_mm": 0.3,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": null,
+              "relative_humidity_mean_pct": null,
+              "snowfall_cm": 0.0,
+              "solar_metric": null,
+              "temperature_max_c": -3.1,
+              "temperature_mean_c": -5.921,
+              "temperature_min_c": -7.3,
+              "wind_direction_mean_deg": null,
+              "wind_direction_member_resultant_length": null,
+              "wind_gust_max_kmh": 16.2,
+              "wind_gust_mean_kmh": 13.5,
               "wind_speed_mean_kmh": null
             }
           ],
@@ -1061,30 +1068,6 @@
               "cloud_cover_mean_pct": null,
               "cloud_cover_mid_mean_pct": null,
               "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": null,
-              "night_min_c": -12.9,
-              "precipitation_mm": 5.7,
-              "precision_class": "native_hourly",
-              "rain_mm": null,
-              "relative_humidity_mean_pct": null,
-              "snowfall_cm": 3.99,
-              "solar_metric": null,
-              "temperature_max_c": -7.9,
-              "temperature_mean_c": -10.171,
-              "temperature_min_c": -12.9,
-              "wind_direction_mean_deg": null,
-              "wind_direction_member_resultant_length": null,
-              "wind_gust_max_kmh": 16.2,
-              "wind_gust_mean_kmh": 9.863,
-              "wind_speed_mean_kmh": null
-            },
-            {
-              "cloud_cover_high_mean_pct": null,
-              "cloud_cover_low_mean_pct": null,
-              "cloud_cover_mean_pct": null,
-              "cloud_cover_mid_mean_pct": null,
-              "complete": true,
               "date": "2026-10-25",
               "dew_point_mean_c": null,
               "night_min_c": -14.7,
@@ -1137,7 +1120,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -11.6,
               "precipitation_mm": 0.0,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -1161,7 +1144,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -11.4,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -1209,7 +1192,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -9.1,
               "precipitation_mm": 4.5,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 2.52,
@@ -1221,6 +1204,30 @@
               "wind_direction_member_resultant_length": null,
               "wind_gust_max_kmh": 23.8,
               "wind_gust_mean_kmh": 16.992,
+              "wind_speed_mean_kmh": null
+            },
+            {
+              "cloud_cover_high_mean_pct": null,
+              "cloud_cover_low_mean_pct": null,
+              "cloud_cover_mean_pct": null,
+              "cloud_cover_mid_mean_pct": null,
+              "complete": true,
+              "date": "2026-10-31",
+              "dew_point_mean_c": null,
+              "night_min_c": -10.7,
+              "precipitation_mm": 0.3,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": null,
+              "relative_humidity_mean_pct": null,
+              "snowfall_cm": 0.0,
+              "solar_metric": null,
+              "temperature_max_c": -4.1,
+              "temperature_mean_c": -7.629,
+              "temperature_min_c": -10.7,
+              "wind_direction_mean_deg": null,
+              "wind_direction_member_resultant_length": null,
+              "wind_gust_max_kmh": 17.6,
+              "wind_gust_mean_kmh": 12.738,
               "wind_speed_mean_kmh": null
             }
           ],
@@ -1281,30 +1288,6 @@
               "cloud_cover_mean_pct": null,
               "cloud_cover_mid_mean_pct": null,
               "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": null,
-              "night_min_c": -8.9,
-              "precipitation_mm": 6.0,
-              "precision_class": "native_hourly",
-              "rain_mm": null,
-              "relative_humidity_mean_pct": null,
-              "snowfall_cm": 4.2,
-              "solar_metric": null,
-              "temperature_max_c": -3.6,
-              "temperature_mean_c": -6.037,
-              "temperature_min_c": -8.9,
-              "wind_direction_mean_deg": null,
-              "wind_direction_member_resultant_length": null,
-              "wind_gust_max_kmh": 24.8,
-              "wind_gust_mean_kmh": 10.554,
-              "wind_speed_mean_kmh": null
-            },
-            {
-              "cloud_cover_high_mean_pct": null,
-              "cloud_cover_low_mean_pct": null,
-              "cloud_cover_mean_pct": null,
-              "cloud_cover_mid_mean_pct": null,
-              "complete": true,
               "date": "2026-10-25",
               "dew_point_mean_c": null,
               "night_min_c": -13.8,
@@ -1357,7 +1340,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -11.2,
               "precipitation_mm": 0.0,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -1381,7 +1364,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -10.1,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -1429,7 +1412,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -4.7,
               "precipitation_mm": 3.6,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 2.31,
@@ -1441,6 +1424,30 @@
               "wind_direction_member_resultant_length": null,
               "wind_gust_max_kmh": 18.0,
               "wind_gust_mean_kmh": 9.796,
+              "wind_speed_mean_kmh": null
+            },
+            {
+              "cloud_cover_high_mean_pct": null,
+              "cloud_cover_low_mean_pct": null,
+              "cloud_cover_mean_pct": null,
+              "cloud_cover_mid_mean_pct": null,
+              "complete": true,
+              "date": "2026-10-31",
+              "dew_point_mean_c": null,
+              "night_min_c": -8.3,
+              "precipitation_mm": 0.0,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": null,
+              "relative_humidity_mean_pct": null,
+              "snowfall_cm": 0.0,
+              "solar_metric": null,
+              "temperature_max_c": -0.9,
+              "temperature_mean_c": -5.246,
+              "temperature_min_c": -8.6,
+              "wind_direction_mean_deg": null,
+              "wind_direction_member_resultant_length": null,
+              "wind_gust_max_kmh": 13.3,
+              "wind_gust_mean_kmh": 9.804,
               "wind_speed_mean_kmh": null
             }
           ],
@@ -1501,30 +1508,6 @@
               "cloud_cover_mean_pct": null,
               "cloud_cover_mid_mean_pct": null,
               "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": null,
-              "night_min_c": -12.9,
-              "precipitation_mm": 5.7,
-              "precision_class": "native_hourly",
-              "rain_mm": null,
-              "relative_humidity_mean_pct": null,
-              "snowfall_cm": 3.99,
-              "solar_metric": null,
-              "temperature_max_c": -7.9,
-              "temperature_mean_c": -10.171,
-              "temperature_min_c": -12.9,
-              "wind_direction_mean_deg": null,
-              "wind_direction_member_resultant_length": null,
-              "wind_gust_max_kmh": 16.2,
-              "wind_gust_mean_kmh": 9.863,
-              "wind_speed_mean_kmh": null
-            },
-            {
-              "cloud_cover_high_mean_pct": null,
-              "cloud_cover_low_mean_pct": null,
-              "cloud_cover_mean_pct": null,
-              "cloud_cover_mid_mean_pct": null,
-              "complete": true,
               "date": "2026-10-25",
               "dew_point_mean_c": null,
               "night_min_c": -14.7,
@@ -1577,7 +1560,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -11.6,
               "precipitation_mm": 0.0,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -1601,7 +1584,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -11.4,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 0.0,
@@ -1649,7 +1632,7 @@
               "dew_point_mean_c": null,
               "night_min_c": -9.1,
               "precipitation_mm": 4.5,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": null,
               "relative_humidity_mean_pct": null,
               "snowfall_cm": 2.52,
@@ -1661,6 +1644,30 @@
               "wind_direction_member_resultant_length": null,
               "wind_gust_max_kmh": 23.8,
               "wind_gust_mean_kmh": 16.992,
+              "wind_speed_mean_kmh": null
+            },
+            {
+              "cloud_cover_high_mean_pct": null,
+              "cloud_cover_low_mean_pct": null,
+              "cloud_cover_mean_pct": null,
+              "cloud_cover_mid_mean_pct": null,
+              "complete": true,
+              "date": "2026-10-31",
+              "dew_point_mean_c": null,
+              "night_min_c": -10.7,
+              "precipitation_mm": 0.3,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": null,
+              "relative_humidity_mean_pct": null,
+              "snowfall_cm": 0.0,
+              "solar_metric": null,
+              "temperature_max_c": -4.1,
+              "temperature_mean_c": -7.629,
+              "temperature_min_c": -10.7,
+              "wind_direction_mean_deg": null,
+              "wind_direction_member_resultant_length": null,
+              "wind_gust_max_kmh": 17.6,
+              "wind_gust_mean_kmh": 12.738,
               "wind_speed_mean_kmh": null
             }
           ],
@@ -2387,18 +2394,10 @@
     "hemu": {
       "analysis_window": {
         "days": 7,
-        "start": "2026-10-24"
+        "start": "2026-10-25"
       },
       "cold_pool_coverage": {
         "by_date": [
-          {
-            "cold_cells": 1,
-            "coverage_ratio": 1.0,
-            "date": "2026-10-24",
-            "label": "widespread",
-            "threshold": "night_min_c < 5",
-            "total_cells": 1
-          },
           {
             "cold_cells": 4,
             "coverage_ratio": 1.0,
@@ -2446,11 +2445,19 @@
             "label": "widespread",
             "threshold": "night_min_c < 5",
             "total_cells": 4
+          },
+          {
+            "cold_cells": 4,
+            "coverage_ratio": 1.0,
+            "date": "2026-10-31",
+            "label": "widespread",
+            "threshold": "night_min_c < 5",
+            "total_cells": 4
           }
         ],
         "next_7d": {
-          "cell_observations": 25,
-          "cold_cell_observations": 25,
+          "cell_observations": 28,
+          "cold_cell_observations": 28,
           "cold_cells": 4,
           "coverage_ratio": 1.0,
           "label": "widespread",
@@ -2466,34 +2473,6 @@
       "samples": [
         {
           "daily": [
-            {
-              "cloud_cover_high_mean_pct": 7.875,
-              "cloud_cover_low_mean_pct": 88.333,
-              "cloud_cover_mean_pct": 90.667,
-              "cloud_cover_mid_mean_pct": 63.292,
-              "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": -12.7,
-              "night_min_c": -17.2,
-              "precipitation_mm": 3.9,
-              "precision_class": "native_hourly",
-              "rain_mm": 0.0,
-              "relative_humidity_mean_pct": 79.417,
-              "snowfall_cm": 2.73,
-              "solar_metric": {
-                "unit": "seconds",
-                "value": 30524.35,
-                "variable": "sunshine_duration"
-              },
-              "temperature_max_c": -7.0,
-              "temperature_mean_c": -9.733,
-              "temperature_min_c": -17.2,
-              "wind_direction_mean_deg": 161.621,
-              "wind_direction_member_resultant_length": 0.796,
-              "wind_gust_max_kmh": 17.3,
-              "wind_gust_mean_kmh": 9.892,
-              "wind_speed_mean_kmh": 2.679
-            },
             {
               "cloud_cover_high_mean_pct": 0.208,
               "cloud_cover_low_mean_pct": 14.042,
@@ -2560,7 +2539,7 @@
               "dew_point_mean_c": -18.204,
               "night_min_c": -15.0,
               "precipitation_mm": 0.3,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": 0.3,
               "relative_humidity_mean_pct": 49.292,
               "snowfall_cm": 0.0,
@@ -2588,7 +2567,7 @@
               "dew_point_mean_c": -17.75,
               "night_min_c": -14.0,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 47.833,
               "snowfall_cm": 0.0,
@@ -2644,7 +2623,7 @@
               "dew_point_mean_c": -8.996,
               "night_min_c": -10.6,
               "precipitation_mm": 4.2,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": 0.6,
               "relative_humidity_mean_pct": 81.5,
               "snowfall_cm": 2.94,
@@ -2885,6 +2864,34 @@
               "wind_gust_max_kmh": 15.1,
               "wind_gust_mean_kmh": 13.079,
               "wind_speed_mean_kmh": 2.854
+            },
+            {
+              "cloud_cover_high_mean_pct": 1.111,
+              "cloud_cover_low_mean_pct": 0.0,
+              "cloud_cover_mean_pct": 1.111,
+              "cloud_cover_mid_mean_pct": 0.0,
+              "complete": false,
+              "date": "2026-11-08",
+              "dew_point_mean_c": -27.4,
+              "night_min_c": -20.2,
+              "precipitation_mm": 0.0,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": 0.0,
+              "relative_humidity_mean_pct": 50.778,
+              "snowfall_cm": 0.0,
+              "solar_metric": {
+                "unit": "seconds",
+                "value": 0.0,
+                "variable": "sunshine_duration"
+              },
+              "temperature_max_c": -18.4,
+              "temperature_mean_c": -19.778,
+              "temperature_min_c": -20.2,
+              "wind_direction_mean_deg": 103.445,
+              "wind_direction_member_resultant_length": 0.999,
+              "wind_gust_max_kmh": 14.0,
+              "wind_gust_mean_kmh": 13.156,
+              "wind_speed_mean_kmh": 2.722
             }
           ],
           "direction": "CORE",
@@ -2904,7 +2911,7 @@
             "forecast_cutoff_date": null,
             "grid_distance_km": 9.247,
             "grid_distance_limit_km": 14.0,
-            "horizon_status": "COMPLETE",
+            "horizon_status": "TRUNCATED_EDGE_MISSING",
             "leading_missing_rows": 0,
             "leading_missing_variables": [],
             "missing_variables": [],
@@ -2915,12 +2922,19 @@
             "original_timestep_count": 360,
             "reason": null,
             "requested_elevation": "nan",
-            "retained_timestep_count": 360,
+            "retained_timestep_count": 345,
             "returned_elevation": 1673.0,
             "rows_dropped_after_cutoff": 0,
             "timezone_check": "PASS",
-            "trailing_missing_rows": 0,
-            "trailing_missing_variables": [],
+            "trailing_missing_rows": 15,
+            "trailing_missing_variables": [
+              "cloud_cover",
+              "precipitation",
+              "snowfall",
+              "sunshine_duration",
+              "temperature_2m",
+              "wind_gusts_10m"
+            ],
             "valid": true
           },
           "requested_coordinate": {
@@ -4710,18 +4724,10 @@
     "kanas": {
       "analysis_window": {
         "days": 7,
-        "start": "2026-10-24"
+        "start": "2026-10-25"
       },
       "cold_pool_coverage": {
         "by_date": [
-          {
-            "cold_cells": 1,
-            "coverage_ratio": 1.0,
-            "date": "2026-10-24",
-            "label": "widespread",
-            "threshold": "night_min_c < 5",
-            "total_cells": 1
-          },
           {
             "cold_cells": 5,
             "coverage_ratio": 1.0,
@@ -4769,11 +4775,19 @@
             "label": "widespread",
             "threshold": "night_min_c < 5",
             "total_cells": 5
+          },
+          {
+            "cold_cells": 5,
+            "coverage_ratio": 1.0,
+            "date": "2026-10-31",
+            "label": "widespread",
+            "threshold": "night_min_c < 5",
+            "total_cells": 5
           }
         ],
         "next_7d": {
-          "cell_observations": 31,
-          "cold_cell_observations": 31,
+          "cell_observations": 35,
+          "cold_cell_observations": 35,
           "cold_cells": 5,
           "coverage_ratio": 1.0,
           "label": "widespread",
@@ -4789,34 +4803,6 @@
       "samples": [
         {
           "daily": [
-            {
-              "cloud_cover_high_mean_pct": 9.542,
-              "cloud_cover_low_mean_pct": 71.958,
-              "cloud_cover_mean_pct": 89.708,
-              "cloud_cover_mid_mean_pct": 71.333,
-              "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": -13.867,
-              "night_min_c": -12.9,
-              "precipitation_mm": 5.7,
-              "precision_class": "native_hourly",
-              "rain_mm": 0.0,
-              "relative_humidity_mean_pct": 74.75,
-              "snowfall_cm": 3.99,
-              "solar_metric": {
-                "unit": "seconds",
-                "value": 30355.0,
-                "variable": "sunshine_duration"
-              },
-              "temperature_max_c": -7.9,
-              "temperature_mean_c": -10.171,
-              "temperature_min_c": -12.9,
-              "wind_direction_mean_deg": 240.574,
-              "wind_direction_member_resultant_length": 0.78,
-              "wind_gust_max_kmh": 16.2,
-              "wind_gust_mean_kmh": 9.863,
-              "wind_speed_mean_kmh": 2.138
-            },
             {
               "cloud_cover_high_mean_pct": 0.25,
               "cloud_cover_low_mean_pct": 33.5,
@@ -4883,7 +4869,7 @@
               "dew_point_mean_c": -17.083,
               "night_min_c": -11.6,
               "precipitation_mm": 0.0,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 47.167,
               "snowfall_cm": 0.0,
@@ -4911,7 +4897,7 @@
               "dew_point_mean_c": -15.104,
               "night_min_c": -11.4,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 52.208,
               "snowfall_cm": 0.0,
@@ -4967,7 +4953,7 @@
               "dew_point_mean_c": -8.454,
               "night_min_c": -9.1,
               "precipitation_mm": 4.5,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": 0.9,
               "relative_humidity_mean_pct": 81.417,
               "snowfall_cm": 2.52,
@@ -5208,6 +5194,34 @@
               "wind_gust_max_kmh": 16.9,
               "wind_gust_mean_kmh": 13.958,
               "wind_speed_mean_kmh": 1.871
+            },
+            {
+              "cloud_cover_high_mean_pct": 0.0,
+              "cloud_cover_low_mean_pct": 0.0,
+              "cloud_cover_mean_pct": 0.0,
+              "cloud_cover_mid_mean_pct": 0.0,
+              "complete": false,
+              "date": "2026-11-08",
+              "dew_point_mean_c": -25.5,
+              "night_min_c": -15.7,
+              "precipitation_mm": 0.0,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": 0.0,
+              "relative_humidity_mean_pct": 41.556,
+              "snowfall_cm": 0.0,
+              "solar_metric": {
+                "unit": "seconds",
+                "value": 0.0,
+                "variable": "sunshine_duration"
+              },
+              "temperature_max_c": -14.8,
+              "temperature_mean_c": -15.3,
+              "temperature_min_c": -15.7,
+              "wind_direction_mean_deg": 165.111,
+              "wind_direction_member_resultant_length": 0.998,
+              "wind_gust_max_kmh": 12.2,
+              "wind_gust_mean_kmh": 11.644,
+              "wind_speed_mean_kmh": 2.078
             }
           ],
           "direction": "CORE",
@@ -5227,7 +5241,7 @@
             "forecast_cutoff_date": null,
             "grid_distance_km": 10.653,
             "grid_distance_limit_km": 14.0,
-            "horizon_status": "COMPLETE",
+            "horizon_status": "TRUNCATED_EDGE_MISSING",
             "leading_missing_rows": 0,
             "leading_missing_variables": [],
             "missing_variables": [],
@@ -5238,12 +5252,19 @@
             "original_timestep_count": 360,
             "reason": null,
             "requested_elevation": "nan",
-            "retained_timestep_count": 360,
+            "retained_timestep_count": 345,
             "returned_elevation": 1922.0,
             "rows_dropped_after_cutoff": 0,
             "timezone_check": "PASS",
-            "trailing_missing_rows": 0,
-            "trailing_missing_variables": [],
+            "trailing_missing_rows": 15,
+            "trailing_missing_variables": [
+              "cloud_cover",
+              "precipitation",
+              "snowfall",
+              "sunshine_duration",
+              "temperature_2m",
+              "wind_gusts_10m"
+            ],
             "valid": true
           },
           "requested_coordinate": {
@@ -7033,18 +7054,10 @@
     "keketuohai": {
       "analysis_window": {
         "days": 7,
-        "start": "2026-10-24"
+        "start": "2026-10-25"
       },
       "cold_pool_coverage": {
         "by_date": [
-          {
-            "cold_cells": 1,
-            "coverage_ratio": 1.0,
-            "date": "2026-10-24",
-            "label": "widespread",
-            "threshold": "night_min_c < 5",
-            "total_cells": 1
-          },
           {
             "cold_cells": 3,
             "coverage_ratio": 1.0,
@@ -7092,11 +7105,19 @@
             "label": "widespread",
             "threshold": "night_min_c < 5",
             "total_cells": 3
+          },
+          {
+            "cold_cells": 3,
+            "coverage_ratio": 1.0,
+            "date": "2026-10-31",
+            "label": "widespread",
+            "threshold": "night_min_c < 5",
+            "total_cells": 3
           }
         ],
         "next_7d": {
-          "cell_observations": 19,
-          "cold_cell_observations": 19,
+          "cell_observations": 21,
+          "cold_cell_observations": 21,
           "cold_cells": 3,
           "coverage_ratio": 1.0,
           "label": "widespread",
@@ -7112,34 +7133,6 @@
       "samples": [
         {
           "daily": [
-            {
-              "cloud_cover_high_mean_pct": 4.833,
-              "cloud_cover_low_mean_pct": 81.292,
-              "cloud_cover_mean_pct": 85.792,
-              "cloud_cover_mid_mean_pct": 36.417,
-              "complete": true,
-              "date": "2026-10-24",
-              "dew_point_mean_c": -11.963,
-              "night_min_c": -17.4,
-              "precipitation_mm": 5.4,
-              "precision_class": "native_hourly",
-              "rain_mm": 0.3,
-              "relative_humidity_mean_pct": 79.208,
-              "snowfall_cm": 3.78,
-              "solar_metric": {
-                "unit": "seconds",
-                "value": 35561.1,
-                "variable": "sunshine_duration"
-              },
-              "temperature_max_c": -5.1,
-              "temperature_mean_c": -8.992,
-              "temperature_min_c": -17.4,
-              "wind_direction_mean_deg": 325.636,
-              "wind_direction_member_resultant_length": 0.339,
-              "wind_gust_max_kmh": 15.8,
-              "wind_gust_mean_kmh": 9.9,
-              "wind_speed_mean_kmh": 2.712
-            },
             {
               "cloud_cover_high_mean_pct": 0.0,
               "cloud_cover_low_mean_pct": 39.75,
@@ -7206,7 +7199,7 @@
               "dew_point_mean_c": -16.225,
               "night_min_c": -14.3,
               "precipitation_mm": -0.3,
-              "precision_class": "mixed",
+              "precision_class": "native_hourly",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 54.667,
               "snowfall_cm": 0.0,
@@ -7234,7 +7227,7 @@
               "dew_point_mean_c": -17.217,
               "night_min_c": -15.3,
               "precipitation_mm": 0.0,
-              "precision_class": "coarse_3h_interpolated",
+              "precision_class": "mixed",
               "rain_mm": 0.0,
               "relative_humidity_mean_pct": 54.083,
               "snowfall_cm": 0.0,
@@ -7290,7 +7283,7 @@
               "dew_point_mean_c": -9.583,
               "night_min_c": -10.0,
               "precipitation_mm": 1.5,
-              "precision_class": "trend_only_6h_plus",
+              "precision_class": "coarse_3h_interpolated",
               "rain_mm": 0.3,
               "relative_humidity_mean_pct": 70.417,
               "snowfall_cm": 1.26,
@@ -7531,6 +7524,34 @@
               "wind_gust_max_kmh": 16.2,
               "wind_gust_mean_kmh": 14.071,
               "wind_speed_mean_kmh": 2.742
+            },
+            {
+              "cloud_cover_high_mean_pct": 0.0,
+              "cloud_cover_low_mean_pct": 0.0,
+              "cloud_cover_mean_pct": 0.0,
+              "cloud_cover_mid_mean_pct": 0.0,
+              "complete": false,
+              "date": "2026-11-08",
+              "dew_point_mean_c": -25.122,
+              "night_min_c": -18.8,
+              "precipitation_mm": 0.0,
+              "precision_class": "trend_only_6h_plus",
+              "rain_mm": 0.0,
+              "relative_humidity_mean_pct": 54.778,
+              "snowfall_cm": 0.0,
+              "solar_metric": {
+                "unit": "seconds",
+                "value": 0.0,
+                "variable": "sunshine_duration"
+              },
+              "temperature_max_c": -17.1,
+              "temperature_mean_c": -18.233,
+              "temperature_min_c": -18.8,
+              "wind_direction_mean_deg": 2.332,
+              "wind_direction_member_resultant_length": 0.999,
+              "wind_gust_max_kmh": 20.5,
+              "wind_gust_mean_kmh": 19.322,
+              "wind_speed_mean_kmh": 4.933
             }
           ],
           "direction": "CORE",
@@ -7550,7 +7571,7 @@
             "forecast_cutoff_date": null,
             "grid_distance_km": 5.531,
             "grid_distance_limit_km": 14.0,
-            "horizon_status": "COMPLETE",
+            "horizon_status": "TRUNCATED_EDGE_MISSING",
             "leading_missing_rows": 0,
             "leading_missing_variables": [],
             "missing_variables": [],
@@ -7561,12 +7582,19 @@
             "original_timestep_count": 360,
             "reason": null,
             "requested_elevation": "nan",
-            "retained_timestep_count": 360,
+            "retained_timestep_count": 345,
             "returned_elevation": 1541.0,
             "rows_dropped_after_cutoff": 0,
             "timezone_check": "PASS",
-            "trailing_missing_rows": 0,
-            "trailing_missing_variables": [],
+            "trailing_missing_rows": 15,
+            "trailing_missing_variables": [
+              "cloud_cover",
+              "precipitation",
+              "snowfall",
+              "sunshine_duration",
+              "temperature_2m",
+              "wind_gusts_10m"
+            ],
             "valid": true
           },
           "requested_coordinate": {
